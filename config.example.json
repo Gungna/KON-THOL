@@ -1,0 +1,6 @@
+{
+  "username": "your_email@student.pens.ac.id",
+  "password": "your_cas_sso_password",
+  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
+  "telegram_chat_id": "YOUR_TELEGRAM_CHAT_ID"
+}

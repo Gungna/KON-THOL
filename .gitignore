@@ -1,0 +1,21 @@
+# Kredensial rahasia (JANGAN PERNAH DI-COMMIT)
+credentials.json
+*.cred
+*.env
+
+# Runtime State & Logs
+attended_keys.json
+autopresence.log
+*.log
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Private internal files
+ethol_autopresence_private_vm.py
+README_GITHUB.md
+*.tmp
+

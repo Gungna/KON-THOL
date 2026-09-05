@@ -155,6 +155,7 @@ class EtholBot:
         self.main_menu_msg_id = None
         self.last_interaction_msg_ids = []
         self.force_siaga = False
+        self.current_mode = None
 
     def load_attended_state(self):
         if os.path.exists(STATE_FILE):
@@ -187,12 +188,16 @@ class EtholBot:
             return False, f"Mode Cooldown sudah aktif untuk hari ini ({today})."
         self.cooldown_date = today
         self.save_attended_state()
+        self.current_mode = "COOLDOWN"
+        self.update_telegram_menu_ui()
         return True, f"Mode Cooldown aktif untuk hari ini ({today}). Polling agresif dijeda hingga esok hari."
 
     def deactivate_cooldown(self):
         self.cooldown_date = None
         self.force_siaga = True
         self.save_attended_state()
+        self.current_mode = "FORCE_SIAGA"
+        self.update_telegram_menu_ui()
         return True, "Mode Siaga Penuh diaktifkan! Mode Cooldown / Istirahat Malam dibatalkan. Bot aktif memantau presensi secara berkala."
 
     def get_banner_path(self):
@@ -263,6 +268,168 @@ class EtholBot:
         for mid in message_ids:
             if mid:
                 self.delete_tg_message(mid)
+
+    def get_status_box(self):
+        now_wib = get_wib_now()
+        now_time_str = now_wib.strftime("%H:%M")
+        time_val = now_wib.hour + now_wib.minute / 60.0
+
+        if not self.user_info:
+            return (
+                "<code>┌─ STATUS ────────────\n"
+                "│ 🔴 Server Terputus\n"
+                "│ ⚠️ Butuh /relogin\n"
+                "└─────────────────────</code>"
+            )
+
+        if self.is_cooldown_active_today():
+            return (
+                "<code>┌─ STATUS ────────────\n"
+                "│ 🟡 Mode Cooldown\n"
+                "│ 💤 Jeda s/d 00:00 WIB\n"
+                "└─────────────────────</code>"
+            )
+
+        if self.force_siaga:
+            return (
+                "<code>┌─ STATUS ────────────\n"
+                "│ 🟢 Siaga Penuh\n"
+                f"│ 🕒 {now_time_str} WIB (Override)\n"
+                "└─────────────────────</code>"
+            )
+
+        if time_val >= 21.5 or time_val < 4.0:
+            return (
+                "<code>┌─ STATUS ────────────\n"
+                "│ 💤 Istirahat Malam\n"
+                f"│ 🕒 {now_time_str} (Standby)\n"
+                "└─────────────────────</code>"
+            )
+
+        if 4.0 <= time_val < 6.5:
+            return (
+                "<code>┌─ STATUS ────────────\n"
+                "│ 🌅 Siaga Subuh\n"
+                f"│ 🕒 {now_time_str} (Standby)\n"
+                "└─────────────────────</code>"
+            )
+
+        return (
+            "<code>┌─ STATUS ────────────\n"
+            "│ 🟢 Siaga Penuh\n"
+            f"│ 🕒 {now_time_str} WIB (SSO OK)\n"
+            "└─────────────────────</code>"
+        )
+
+    def format_menu_text(self):
+        status_box = self.get_status_box()
+        credit = "\n\n✦ <b>Creator : Gungna</b>"
+        return (
+            "<b>KON-THOL ASSISTANT</b>\n"
+            "<i>Kawan Otomasi dan Notifikasi E-THOL</i>\n\n"
+            f"{status_box}\n\n"
+            "<b>PANDUAN PERINTAH:</b>\n"
+            "⚡ /scan atau /absen - Scan presensi seketika\n"
+            "📅 /jadwal - Jadwal perkuliahan mingguan\n"
+            "📊 /rekap - Rekapitulasi kehadiran semester\n"
+            "📝 /tugas - Daftar tugas pending & tautan\n"
+            "📜 /log - Riwayat catatan log aktivitas\n"
+            "ℹ️ /status - Status bot & sesi login SSO\n"
+            "💤 /cooldown - Istirahatkan scanner hari ini\n"
+            "⚡ /resume - Batalkan cooldown & kembali siaga\n"
+            "🔄 /relogin - Sinkronisasi ulang sesi SSO PENS"
+            + credit
+        )
+
+    def edit_tg_caption(self, message_id, caption):
+        if not self.tg_token or not self.tg_chat_id or not message_id:
+            return False
+        try:
+            url = f"https://api.telegram.org/bot{self.tg_token}/editMessageCaption"
+            r = requests.post(url, json={
+                "chat_id": self.tg_chat_id,
+                "message_id": message_id,
+                "caption": caption,
+                "parse_mode": "HTML"
+            }, timeout=8)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def edit_tg_text(self, message_id, text):
+        if not self.tg_token or not self.tg_chat_id or not message_id:
+            return False
+        try:
+            url = f"https://api.telegram.org/bot{self.tg_token}/editMessageText"
+            r = requests.post(url, json={
+                "chat_id": self.tg_chat_id,
+                "message_id": message_id,
+                "text": text,
+                "parse_mode": "HTML"
+            }, timeout=8)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def update_telegram_menu_ui(self):
+        if not self.tg_token or not self.tg_chat_id:
+            return
+        menu_text = self.format_menu_text()
+        if self.main_menu_msg_id:
+            succ = self.edit_tg_caption(self.main_menu_msg_id, menu_text)
+            if not succ:
+                succ = self.edit_tg_text(self.main_menu_msg_id, menu_text)
+            if not succ:
+                self.main_menu_msg_id = self.send_tg_photo(menu_text)
+        else:
+            self.main_menu_msg_id = self.send_tg_photo(menu_text)
+
+    def determine_mode(self, now_wib=None):
+        if not now_wib:
+            now_wib = get_wib_now()
+        time_val = now_wib.hour + now_wib.minute / 60.0
+        if self.is_cooldown_active_today():
+            return "COOLDOWN"
+        if self.force_siaga:
+            return "FORCE_SIAGA"
+        if time_val >= 21.5 or time_val < 4.0:
+            return "ISTIRAHAT_MALAM"
+        if 4.0 <= time_val < 6.5:
+            return "SIAGA_SUBUH"
+        return "SIAGA_NORMAL"
+
+    def notify_mode_change(self, old_mode, new_mode):
+        now_time_str = get_wib_now().strftime("%H:%M")
+        if new_mode == "ISTIRAHAT_MALAM":
+            msg = (
+                "🌙 <b>PERGANTIAN MODE: ISTIRAHAT MALAM</b>\n"
+                f"🕒 Waktu: <code>{now_time_str} WIB</code>\n\n"
+                "Sistem memasuki periode istirahat malam (21:30 - 04:00 WIB). "
+                "Pemantauan santai tetap aktif berkala untuk mengantisipasi presensi malam dadakan. "
+                "Gunakan perintah /resume atau /siaga jika ada perkuliahan malam."
+            )
+        elif new_mode == "SIAGA_SUBUH":
+            msg = (
+                "🌅 <b>PERGANTIAN MODE: SIAGA SUBUH</b>\n"
+                f"🕒 Waktu: <code>{now_time_str} WIB</code>\n\n"
+                "Waktu subuh telah tiba (04:00 - 06:30 WIB). Bot mengaktifkan Siaga Subuh dan menyegarkan sesi SSO "
+                "untuk bersiap menyambut pembukaan presensi kuliah pagi hari ini!"
+            )
+        elif new_mode in ["SIAGA_NORMAL", "FORCE_SIAGA"]:
+            msg = (
+                "🟢 <b>PERGANTIAN MODE: SIAGA PENUH</b>\n"
+                f"🕒 Waktu: <code>{now_time_str} WIB</code>\n\n"
+                "Jam operasional perkuliahan aktif. Bot kembali siaga penuh memantau presensi dan jadwal perkuliahan!"
+            )
+        elif new_mode == "COOLDOWN":
+            msg = (
+                "🟡 <b>MODE COOLDOWN AKTIF</b>\n"
+                f"🕒 Waktu: <code>{now_time_str} WIB</code>\n\n"
+                "Polling agresif ditiadakan hingga pergantian hari (00:00 WIB)."
+            )
+        else:
+            return
+        self.send_tg(msg)
 
     def login_cas(self, notify_on_fail=False):
         logger.info("Memulai otentikasi CAS SSO PENS...")
@@ -791,20 +958,9 @@ class EtholBot:
             if user_msg_id:
                 self.delete_tg_message(user_msg_id)
 
-            help_text = (
-                "<b>PANDUAN PERINTAH KON-THOL:</b>\n\n"
-                "⚡ /scan atau /absen - Scan presensi seketika\n"
-                "📅 /jadwal - Jadwal perkuliahan mingguan\n"
-                "📊 /rekap - Rekapitulasi kehadiran semester\n"
-                "📝 /tugas - Daftar tugas pending & tautan\n"
-                "📜 /log - Riwayat catatan log aktivitas\n"
-                "ℹ️ /status - Status bot & sesi login SSO\n"
-                "💤 /cooldown - Istirahatkan scanner hari ini\n"
-                "⚡ /resume - Batalkan cooldown & kembali siaga\n"
-                "🔄 /relogin - Sinkronisasi ulang sesi SSO PENS\n"
-                + credit
-            )
-            self.main_menu_msg_id = self.send_tg_photo(help_text)
+            menu_text = self.format_menu_text()
+            self.main_menu_msg_id = self.send_tg_photo(menu_text)
+            self.current_mode = self.determine_mode()
             return
 
         # Untuk slash command aktif (terakhir), catat input user dan hasil jawaban
@@ -861,29 +1017,54 @@ class EtholBot:
 
     def run_auto_loop(self, interval=120):
         logger.info(f"Scanner background aktif (interval {interval}s)...")
+        last_scan_tick = 0
         while True:
             try:
                 now_wib = get_wib_now()
                 time_val = now_wib.hour + now_wib.minute / 60.0
 
+                # 1. Cek pergantian mode operasional & update Telegram UI otomatis
+                mode_now = self.determine_mode(now_wib)
+                if mode_now != self.current_mode:
+                    old_mode = self.current_mode
+                    self.current_mode = mode_now
+                    if old_mode is not None:
+                        logger.info(f"Pergantian mode operasional: {old_mode} -> {mode_now}")
+                        self.notify_mode_change(old_mode, mode_now)
+                        self.update_telegram_menu_ui()
+
+                # 2. Atur interval scan berdasarkan mode
                 if self.is_cooldown_active_today():
                     time.sleep(30)
                     continue
 
                 if not self.force_siaga and (time_val >= 21.5 or time_val < 4.0):
-                    # Istirahat Malam: jam 21:30 - 04:00 (sebelum subuh)
-                    # Tetap lakukan scan berkala santai tiap 5 menit (bukan sleep kosong),
-                    # sehingga jika tiba-tiba ada absensi malam dibuka tetap ter-cover otomatis!
-                    self.check_notifications_trigger()
-                    self.scan_and_attend(manual=False)
-                    time.sleep(300)
+                    # Istirahat Malam: scan tiap 300s
+                    if time.time() - last_scan_tick > 300:
+                        self.check_notifications_trigger()
+                        self.scan_and_attend(manual=False)
+                        last_scan_tick = time.time()
+                    time.sleep(30)
                     continue
 
-                self.check_notifications_trigger()
-                self.scan_and_attend(manual=False)
+                if 4.0 <= time_val < 6.5:
+                    # Siaga Subuh: scan tiap 180s
+                    if time.time() - last_scan_tick > 180:
+                        self.check_notifications_trigger()
+                        self.scan_and_attend(manual=False)
+                        last_scan_tick = time.time()
+                    time.sleep(20)
+                    continue
+
+                # Siaga Normal
+                if time.time() - last_scan_tick > interval:
+                    self.check_notifications_trigger()
+                    self.scan_and_attend(manual=False)
+                    last_scan_tick = time.time()
+                time.sleep(10)
             except Exception as e:
                 logger.error(f"Error pada auto loop: {e}")
-            time.sleep(interval)
+                time.sleep(15)
 
     def run_tg_listener(self):
         if not self.tg_token:

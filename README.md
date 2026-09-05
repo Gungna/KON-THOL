@@ -9,7 +9,7 @@
 
 ---
 
-## Pilihan Penggunaan
+## Pilihan Penggunaan: Di-pair ke Bot Telegram atau Dijalankan dari Terminal / HP
 
 Bot **KON-THOL** dirancang paling optimal ketika **di-pair / diintegrasikan dengan Bot Telegram pribadi** Anda:
 - Anda memiliki kendali langsung di genggaman smartphone tanpa perlu selalu membuka laptop atau terminal.

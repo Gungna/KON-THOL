@@ -1,0 +1,28 @@
+{
+    "whatsapp": {
+        "provider": "fonnte",
+        "api_key": "YOUR_FONNTE_TOKEN_HERE",
+        "target_phone": "6281234567890",
+        "endpoint_url": "https://api.fonnte.com/send"
+    },
+    "telegram": {
+        "token": "YOUR_TELEGRAM_BOT_TOKEN",
+        "chat_id": "YOUR_TELEGRAM_CHAT_ID"
+    },
+    "accounts": [
+        {
+            "name": "Mahasiswa 1 (Utama)",
+            "username": "nrp1@iet.student.pens.ac.id",
+            "password": "YOUR_PASSWORD_1",
+            "wa_target": "6281234567890",
+            "telegram_chat_id": "YOUR_TELEGRAM_CHAT_ID"
+        },
+        {
+            "name": "Mahasiswa 2 (Teman)",
+            "username": "nrp2@iet.student.pens.ac.id",
+            "password": "YOUR_PASSWORD_2",
+            "wa_target": "6289876543210",
+            "telegram_chat_id": ""
+        }
+    ]
+}

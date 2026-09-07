@@ -275,6 +275,51 @@ class EtholBot:
             if mid:
                 self.delete_tg_message(mid)
 
+    def start_loading_bar(self, text="Memuat data..."):
+        """Mengirim pesan loading bar 50% di bagian paling bawah agar riwayat chat tidak pernah kosong (0 pesan)."""
+        if not self.tg_token or not self.tg_chat_id:
+            return None
+        try:
+            url = f"https://api.telegram.org/bot{self.tg_token}/sendMessage"
+            payload = {
+                "chat_id": self.tg_chat_id,
+                "text": f"⏳ <b>{html.escape(text)}</b>\n<code>[▰▰▰▰▰▱▱▱▱▱] 50%</code>",
+                "parse_mode": "HTML"
+            }
+            r = requests.post(url, json=payload, timeout=6)
+            if r.status_code == 200:
+                return r.json().get('result', {}).get('message_id')
+        except Exception as e:
+            logger.debug(f"Gagal kirim loading bar: {e}")
+        return None
+
+    def advance_loading_bar(self, loading_id, text="Menyiapkan tampilan..."):
+        """Mengupdate loading bar menjadi 100% saat data siap."""
+        if not self.tg_token or not self.tg_chat_id or not loading_id:
+            return
+        try:
+            url = f"https://api.telegram.org/bot{self.tg_token}/editMessageText"
+            payload = {
+                "chat_id": self.tg_chat_id,
+                "message_id": loading_id,
+                "text": f"⚡ <b>{html.escape(text)}</b>\n<code>[▰▰▰▰▰▰▰▰▰▰] 100%</code>",
+                "parse_mode": "HTML"
+            }
+            requests.post(url, json=payload, timeout=5)
+        except Exception:
+            pass
+
+    def finish_loading_bar(self, loading_id):
+        """Menghapus pesan loading bar sementara setelah pesan target telah tampil di layar."""
+        if not self.tg_token or not self.tg_chat_id or not loading_id:
+            return
+        try:
+            url = f"https://api.telegram.org/bot{self.tg_token}/deleteMessage"
+            payload = {"chat_id": self.tg_chat_id, "message_id": loading_id}
+            requests.post(url, json=payload, timeout=5)
+        except Exception:
+            pass
+
     def get_status_box(self):
         now_wib = get_wib_now()
         now_time_str = now_wib.strftime("%H:%M")
@@ -1025,7 +1070,10 @@ class EtholBot:
         logger.info(f"Menerima perintah Telegram: {cmd}")
         credit = "\n\n✦ <b>Creator : Gungna</b>"
 
-        # Hapus pesan-pesan interaksi perantara sebelumnya
+        # Kirim loading bar terlebih dahulu di bagian paling bawah agar riwayat chat tidak pernah 0 pesan
+        loading_id = self.start_loading_bar("Memproses perintah...")
+
+        # Hapus pesan-pesan interaksi perantara sebelumnya di atas loading bar
         self.delete_tg_messages(self.last_interaction_msg_ids)
         self.last_interaction_msg_ids = []
 
@@ -1037,9 +1085,15 @@ class EtholBot:
             if user_msg_id:
                 self.delete_tg_message(user_msg_id)
 
+            if loading_id:
+                self.advance_loading_bar(loading_id, "Menyiapkan menu utama...")
+
             menu_text = self.format_menu_text()
             self.main_menu_msg_id = self.send_tg_photo(menu_text)
             self.current_mode = self.determine_mode()
+
+            if loading_id:
+                self.finish_loading_bar(loading_id)
             return
 
         # Untuk slash command aktif (terakhir), catat input user dan hasil jawaban
@@ -1047,12 +1101,12 @@ class EtholBot:
         if user_msg_id:
             current_batch.append(user_msg_id)
 
+        if loading_id:
+            self.advance_loading_bar(loading_id, "Mengambil data...")
+
         if c in ['/scan', '/absen', 'scan', 'absen']:
-            prog_id = self.send_tg("⏳ Sedang memindai presensi di server ETHOL...")
             res = self.scan_and_attend(manual=True)
             res_id = self.send_tg(f"{res}{credit}")
-            if prog_id:
-                self.delete_tg_message(prog_id)
             if res_id:
                 current_batch.append(res_id)
         elif c in ['/jadwal', '/matkul', 'jadwal']:
@@ -1079,13 +1133,10 @@ class EtholBot:
             res_id = self.send_tg(f"⚡ {msg}{credit}")
             if res_id: current_batch.append(res_id)
         elif c in ['/relogin', 'relogin']:
-            prog_id = self.send_tg("🔄 Melakukan otentikasi ulang CAS SSO...")
             if self.login_cas(notify_on_fail=False):
                 res_id = self.send_tg(f"✅ Berhasil login ulang ke SSO PENS!{credit}")
             else:
                 res_id = self.send_tg(f"❌ Gagal login ulang ke SSO PENS.{credit}")
-            if prog_id:
-                self.delete_tg_message(prog_id)
             if res_id:
                 current_batch.append(res_id)
         else:
@@ -1093,6 +1144,9 @@ class EtholBot:
             if res_id: current_batch.append(res_id)
 
         self.last_interaction_msg_ids = current_batch
+
+        if loading_id:
+            self.finish_loading_bar(loading_id)
 
     def run_auto_loop(self, interval=120):
         logger.info(f"Scanner background aktif (interval {interval}s)...")

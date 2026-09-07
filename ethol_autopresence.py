@@ -134,7 +134,13 @@ class EtholBot:
 
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*'
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Origin': 'https://ethol.pens.ac.id',
+            'Referer': 'https://ethol.pens.ac.id/',
+            'Sec-Ch-Ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
         })
 
         self.user_info = None
@@ -523,8 +529,47 @@ class EtholBot:
             return pres_data.get('key')
         return None
 
+    def get_active_course_now(self):
+        """Mendeteksi mata kuliah yang sedang aktif berlangsung saat ini sesuai jadwal."""
+        now_dt = get_wib_now()
+        day_map = {0: "senin", 1: "selasa", 2: "rabu", 3: "kamis", 4: "jumat", 5: "sabtu", 6: "minggu"}
+        curr_day = day_map.get(now_dt.weekday(), "")
+
+        if not self.schedule_cache or not self.courses_cache:
+            return None
+
+        for item in self.schedule_cache:
+            h = str(item.get('hari', '')).lower().replace("'", "").strip()
+            if h.startswith("jum"):
+                h = "jumat"
+
+            if h == curr_day:
+                j_start = item.get('jam_awal', '')
+                j_end = item.get('jam_akhir', '')
+                if j_start and j_end:
+                    try:
+                        h_s, m_s = map(int, j_start.split(':'))
+                        h_e, m_e = map(int, j_end.split(':'))
+                        # Toleransi: 15 menit sebelum kelas s/d 20 menit setelah jam berakhir
+                        start_min = (h_s * 60 + m_s) - 15
+                        end_min = (h_e * 60 + m_e) + 20
+                        cur_min = now_dt.hour * 60 + now_dt.minute
+
+                        if start_min <= cur_min <= end_min:
+                            k_id = item.get('kuliah') or item.get('nomor') or item.get('id_kuliah')
+                            for c in self.courses_cache:
+                                mk_obj = c.get('nama_matakuliah') or c.get('matakuliah')
+                                mk_name = mk_obj.get('nama') if isinstance(mk_obj, dict) else (mk_obj or "")
+                                if c.get('nomor') == k_id or (item.get('matakuliah') and item.get('matakuliah') in mk_name):
+                                    return c
+                    except Exception:
+                        pass
+        return None
+
     def scan_and_attend(self, manual=False):
+        now_wib = get_wib_now()
         now_str = get_wib_str()
+        today_str = now_wib.strftime("%Y-%m-%d")
         self.last_scan_time = now_str
 
         if not self.ensure_valid_session():
@@ -537,7 +582,14 @@ class EtholBot:
         found_open = 0
         results = []
 
-        for c in self.courses_cache:
+        # Prioritaskan mata kuliah yang sedang berlangsung sesuai jadwal hari ini
+        active_course = self.get_active_course_now()
+        courses_to_scan = list(self.courses_cache)
+        if active_course:
+            k_act_id = active_course.get('nomor')
+            courses_to_scan = [c for c in courses_to_scan if c.get('nomor') == k_act_id] + [c for c in courses_to_scan if c.get('nomor') != k_act_id]
+
+        for c in courses_to_scan:
             k_id = c.get('nomor')
             schema = c.get('jenis_schema') or c.get('jenisSchema') or 0
             mk_obj = c.get('nama_matakuliah') or c.get('matakuliah')
@@ -551,31 +603,57 @@ class EtholBot:
                     params={'kuliah': k_id, 'jenis_schema': schema},
                     timeout=8
                 )
+
+                # Jika sesi kedaluwarsa di tengah loop, re-login SSO instan dan ulangi 1x
+                if pres_resp.status_code == 401:
+                    if self.login_cas(notify_on_fail=False):
+                        pres_resp = self.session.get(
+                            'https://ethol.pens.ac.id/api/presensi/aktif-kuliah',
+                            params={'kuliah': k_id, 'jenis_schema': schema},
+                            timeout=8
+                        )
+                    else:
+                        continue
+
                 if pres_resp.status_code == 200:
                     pres_data = pres_resp.json()
                     key = self.extract_active_key(pres_data)
 
                     if key:
                         found_open += 1
-                        if key in self.attended_keys:
+                        unique_today_key = f"{today_str}_{key}"
+                        if key in self.attended_keys or unique_today_key in self.attended_keys:
                             results.append(f"ℹ️ <b>{mk_nama}</b>: Presensi terbuka & sudah tercatat.")
                             continue
 
-                        logger.info(f"⚡ Presensi Terbuka: {mk_nama} (Key: {key})")
+                        logger.info(f"⚡ Presensi Terbuka Ditemukan: {mk_nama} (Key: {key})")
                         payload = {
                             "kuliah": k_id,
                             "jenis_schema": schema,
-                            "mahasiswa": self.user_info.get('nomor'),
+                            "mahasiswa": self.user_info.get('nomor') if self.user_info else None,
                             "key": key,
                             "kuliah_asal": kuliah_asal
                         }
                         submit_resp = self.session.post('https://ethol.pens.ac.id/api/presensi/mahasiswa', json=payload, timeout=10)
 
+                        # Retry submit jika sesi sempat timeout
+                        if submit_resp.status_code == 401:
+                            if self.login_cas(notify_on_fail=False):
+                                payload["mahasiswa"] = self.user_info.get('nomor') if self.user_info else None
+                                submit_resp = self.session.post('https://ethol.pens.ac.id/api/presensi/mahasiswa', json=payload, timeout=10)
+
                         if submit_resp.status_code == 200:
                             res_json = submit_resp.json()
-                            pesan = res_json.get('pesan', 'Berhasil')
+                            pesan = res_json.get('pesan') or res_json.get('message') or 'Berhasil'
+                            is_success = (
+                                res_json.get('sukses') or
+                                res_json.get('success') or
+                                res_json.get('status') in [200, "200", True] or
+                                "sudah" in str(pesan).lower() or
+                                "berhasil" in str(pesan).lower()
+                            )
 
-                            if res_json.get('sukses') or "sudah" in str(pesan).lower():
+                            if is_success:
                                 success_msg = (
                                     "🎉 <b>PRESENSI BERHASIL DICATAT!</b>\n\n"
                                     f"📚 <b>Mata Kuliah:</b> {mk_nama}\n"
@@ -588,6 +666,7 @@ class EtholBot:
                                 self.send_tg(success_msg)
                                 send_os_notification("Presensi Berhasil!", f"{mk_nama} berhasil diabsenkan ({pesan})")
                                 self.attended_keys.add(key)
+                                self.attended_keys.add(unique_today_key)
                                 self.save_attended_state()
                                 results.append(f"✅ <b>{mk_nama}</b>: {pesan}")
                             else:
@@ -1056,12 +1135,13 @@ class EtholBot:
                     time.sleep(20)
                     continue
 
-                # Siaga Normal
-                if time.time() - last_scan_tick > interval:
+                # Siaga Normal: scan tiap 60s agar presensi singkat tidak terlewat
+                scan_target_interval = 60 if interval > 60 else interval
+                if time.time() - last_scan_tick > scan_target_interval:
                     self.check_notifications_trigger()
                     self.scan_and_attend(manual=False)
                     last_scan_tick = time.time()
-                time.sleep(10)
+                time.sleep(5)
             except Exception as e:
                 logger.error(f"Error pada auto loop: {e}")
                 time.sleep(15)

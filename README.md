@@ -54,10 +54,8 @@ Bisa. Anda tetap dapat menjalankan script di laptop atau HP (Termux) secara mand
   Menyajikan 15 baris catatan log aktivitas sistem terbaru (via `/log` atau CLI `log`) untuk memudahkan pemantauan proses presensi dan deteksi sesi tanpa perlu membuka file log manual.
 - **Mode Cooldown (Istirahat Harian)**:  
   Dapat mengistirahatkan scanner presensi setelah kuliah hari ini selesai menggunakan perintah `/cooldown` dan mengembalikannya ke siaga penuh dengan `/resume`.
-- **Edisi Khusus: Multi-Account Concurrency & WhatsApp Gateway (`kon_thol_public.py`)**:  
+- **Edisi Khusus: Multi-Account Concurrency & WhatsApp Gateway**:  
   Mendukung pemindaian dan pengisian presensi otomatis untuk 2 atau lebih akun mahasiswa sekaligus secara serentak (*concurrent multithreading*) menggunakan `ThreadPoolExecutor`, lengkap dengan notifikasi WhatsApp Gateway real-time (Fonnte / Webhook) serta fallback Telegram.
-
-*(Catatan: Varian publik V1 ini beroperasi menggunakan antarmuka teks/slash command ringan yang hemat sumber daya. Antarmuka interaktif inline-keyboard klik-klik 2 halaman dengan update banner di tempat, adaptive burst scheduler, serta tombol panel Multi-Account terintegrasi merupakan fitur arsitektur lanjutan pada varian Private V2).*
 
 ---
 

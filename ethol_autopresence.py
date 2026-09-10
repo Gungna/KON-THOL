@@ -388,7 +388,8 @@ class EtholBot:
             "ℹ️ /status - Status bot & sesi login SSO\n"
             "💤 /cooldown - Istirahatkan scanner hari ini\n"
             "⚡ /resume - Batalkan cooldown & kembali siaga\n"
-            "🔄 /relogin - Sinkronisasi ulang sesi SSO PENS"
+            "🔄 /relogin - Sinkronisasi ulang sesi SSO PENS\n"
+            "🔑 /setcred - Ganti akun E-THOL (/setcred email password)"
             + credit
         )
 
@@ -1139,6 +1140,61 @@ class EtholBot:
                 res_id = self.send_tg(f"❌ Gagal login ulang ke SSO PENS.{credit}")
             if res_id:
                 current_batch.append(res_id)
+        elif cmd.startswith('/setcred') or cmd.startswith('/setakun') or cmd.startswith('/login') or cmd.startswith('/akun'):
+            # Segera hapus pesan user yang berisi password demi keamanan
+            if user_msg_id:
+                self.delete_tg_message(user_msg_id)
+
+            parts = cmd.split()
+            if len(parts) < 3:
+                res_id = self.send_tg(f"⚠️ <b>Format Perintah:</b>\n<code>/setcred email@student.pens.ac.id password_sso</code>{credit}")
+                if res_id: current_batch.append(res_id)
+            else:
+                new_user = parts[1].strip()
+                new_pass = parts[2].strip()
+
+                self.username = new_user
+                self.password = new_pass
+
+                # Simpan kredensial baru ke credentials.json
+                try:
+                    cred_file = os.path.join(BASE_DIR, "credentials.json")
+                    cred_data = {}
+                    if os.path.exists(cred_file):
+                        with open(cred_file, "r") as f:
+                            cred_data = json.load(f)
+                    cred_data["username"] = new_user
+                    cred_data["password"] = new_pass
+                    with open(cred_file, "w") as f:
+                        json.dump(cred_data, f, indent=2)
+                except Exception as e:
+                    logger.error(f"Gagal simpan credentials.json: {e}")
+
+                # Bersihkan sesi dan cache lama agar tidak tercampur
+                self.session.cookies.clear()
+                self.attended_keys = set()
+                self.save_attended_state()
+                self.user_info = None
+
+                if loading_id:
+                    self.advance_loading_bar(loading_id, "Mengautentikasi ke SSO PENS...")
+
+                if self.login_cas(notify_on_fail=False):
+                    self.update_cache(force=True)
+                    mhs_nama = self.user_info.get("nama", new_user) if self.user_info else new_user
+                    mhs_nrp = self.user_info.get("nrp", "") if self.user_info else ""
+                    nrp_str = f" ({mhs_nrp})" if mhs_nrp else ""
+                    res_id = self.send_tg(
+                        f"✅ <b>KREDENSIAL BERHASIL DISIMPAN</b>\n\n"
+                        f"Login SSO PENS berhasil atas nama <b>{mhs_nama}</b>{nrp_str}!\n"
+                        f"Scanner otomatis sekarang siaga memantau presensi akun ini.{credit}"
+                    )
+                else:
+                    res_id = self.send_tg(
+                        f"⚠️ Kredensial telah disimpan, tetapi gagal login ke SSO PENS. "
+                        f"Silakan periksa kembali email & password Anda, lalu coba /relogin.{credit}"
+                    )
+                if res_id: current_batch.append(res_id)
         else:
             res_id = self.send_tg(f"Perintah tidak dikenal: <code>{html.escape(cmd)}</code>. Ketik /help untuk panduan.{credit}")
             if res_id: current_batch.append(res_id)

@@ -52,11 +52,14 @@ def resolve_file(filename):
     for candidate in [
         os.path.join(os.getcwd(), filename),
         os.path.join(BASE_DIR, filename),
+        os.path.join("/opt/ethol-autopresence-public", filename),
         os.path.join("/opt/ethol-autopresence", filename)
     ]:
         if os.path.exists(candidate):
             return candidate
     return os.path.join(BASE_DIR, filename)
+
+ACCOUNTS_FILE = resolve_file("accounts.json")
 
 LOG_FILE = resolve_file("autopresence.log")
 CRED_FILE = resolve_file("credentials.json")
@@ -111,6 +114,308 @@ def send_os_notification(title, message):
         except Exception:
             pass
 
+
+class StudentAccount:
+    """Representasi satu akun mahasiswa dengan sesi HTTP dan state presensi mandiri."""
+    def __init__(self, name, username, password, wa_target="", telegram_chat_id=""):
+        self.name = name or "Mahasiswa"
+        self.username = username.strip()
+        self.password = password.strip()
+        self.wa_target = str(wa_target or "").strip()
+        self.telegram_chat_id = str(telegram_chat_id or "").strip()
+
+        self.session = requests.Session()
+        retries = Retry(total=2, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504])
+        adapter = HTTPAdapter(max_retries=retries, pool_connections=5, pool_maxsize=10)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Origin': 'https://ethol.pens.ac.id',
+            'Referer': 'https://ethol.pens.ac.id/',
+            'Sec-Ch-Ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+        })
+
+        self.user_info = None
+        self.tahun_aktif = get_wib_now().year
+        self.semester_aktif = 1
+        self.courses_cache = []
+        self.schedule_cache = []
+        self.last_cache_update = 0
+        self.last_auth_time = "-"
+
+        # State presensi terisolasi per akun
+        safe_user = "".join(c for c in self.username if c.isalnum()) or "user"
+        self.state_file = resolve_file(f"attended_{safe_user}.json")
+        self.attended_keys = set()
+        self.load_attended_state()
+
+    def load_attended_state(self):
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.attended_keys = set(data.get('attended_keys', []))
+            except Exception as e:
+                logger.warning(f"[{self.name}] Gagal memuat state: {e}")
+
+    def save_attended_state(self):
+        try:
+            with open(self.state_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "attended_keys": list(self.attended_keys),
+                    "last_updated": get_wib_str()
+                }, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[{self.name}] Gagal menyimpan state: {e}")
+
+    def login_cas(self, notify_on_fail=False):
+        logger.info(f"[{self.name}] Memulai otentikasi CAS SSO PENS ({self.username})...")
+        self.session.cookies.clear()
+        try:
+            resp = self.session.get('https://ethol.pens.ac.id/api/auth/cas-redirect', allow_redirects=True, timeout=15)
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            form = soup.find('form', id='fm1')
+            if not form:
+                logger.error(f"[{self.name}] Form login CAS SSO tidak ditemukan.")
+                return False
+
+            action = form.get('action')
+            post_url = urllib.parse.urljoin(resp.url, action)
+            form_data = {inp.get('name'): inp.get('value', '') for inp in form.find_all('input') if inp.get('name')}
+            form_data['username'] = self.username
+            form_data['password'] = self.password
+            form_data['_eventId'] = 'submit'
+            form_data['submit'] = 'LOGIN'
+
+            self.session.post(post_url, data=form_data, allow_redirects=True, timeout=15)
+
+            val_resp = self.session.get('https://ethol.pens.ac.id/api/auth/validasi-token', timeout=10)
+            if val_resp.status_code == 200:
+                self.user_info = val_resp.json()
+                self.last_auth_time = get_wib_str()
+                logger.info(f"[{self.name}] Login Sukses: {self.user_info.get('nama')} ({self.user_info.get('nipnrp')})")
+                self.update_cache(force=True)
+                return True
+            else:
+                logger.error(f"[{self.name}] Validasi token gagal (HTTP {val_resp.status_code})")
+                return False
+        except Exception as e:
+            logger.error(f"[{self.name}] Exception Login: {e}")
+            return False
+
+    def ensure_valid_session(self):
+        if not self.user_info:
+            return self.login_cas()
+        try:
+            r = self.session.post('https://ethol.pens.ac.id/api/auth/refresh', timeout=5)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            pass
+        return self.login_cas(notify_on_fail=False)
+
+    def update_cache(self, force=False):
+        now = time.time()
+        if not force and (now - self.last_cache_update < 600) and self.courses_cache:
+            return
+
+        try:
+            conf_resp = self.session.get('https://ethol.pens.ac.id/api/auth/config', timeout=8)
+            if conf_resp.status_code == 200:
+                c = conf_resp.json()
+                self.tahun_aktif = c.get('tahun_aktif', self.tahun_aktif)
+                self.semester_aktif = c.get('semester_aktif', self.semester_aktif)
+
+            r_courses = self.session.get('https://ethol.pens.ac.id/api/kuliah', params={
+                'tahun': self.tahun_aktif,
+                'semester': self.semester_aktif
+            }, timeout=10)
+            if r_courses.status_code == 200:
+                self.courses_cache = r_courses.json() or []
+
+            r_jadwal = self.session.get('https://ethol.pens.ac.id/api/jadwal/jadwal-online', params={
+                'tahun': self.tahun_aktif,
+                'semester': self.semester_aktif
+            }, timeout=10)
+            if r_jadwal.status_code == 200:
+                self.schedule_cache = r_jadwal.json() or []
+
+            self.last_cache_update = now
+        except Exception as e:
+            logger.warning(f"[{self.name}] Gagal memperbarui cache data: {e}")
+
+    def extract_active_key(self, pres_data):
+        if not pres_data:
+            return None
+        if isinstance(pres_data, list) and len(pres_data) > 0:
+            item = pres_data[0]
+            if isinstance(item, dict):
+                return item.get('key')
+        elif isinstance(pres_data, dict):
+            return pres_data.get('key')
+        return None
+
+    def get_active_course_now(self):
+        now_dt = get_wib_now()
+        day_map = {0: "senin", 1: "selasa", 2: "rabu", 3: "kamis", 4: "jumat", 5: "sabtu", 6: "minggu"}
+        curr_day = day_map.get(now_dt.weekday(), "")
+
+        if not self.schedule_cache or not self.courses_cache:
+            return None
+
+        for item in self.schedule_cache:
+            h = str(item.get('hari', '')).lower().replace("'", "").strip()
+            if h.startswith("jum"):
+                h = "jumat"
+
+            if h == curr_day:
+                j_start = item.get('jam_awal', '')
+                j_end = item.get('jam_akhir', '')
+                if j_start and j_end:
+                    try:
+                        h_s, m_s = map(int, j_start.split(':'))
+                        h_e, m_e = map(int, j_end.split(':'))
+                        start_min = (h_s * 60 + m_s) - 15
+                        end_min = (h_e * 60 + m_e) + 20
+                        cur_min = now_dt.hour * 60 + now_dt.minute
+
+                        if start_min <= cur_min <= end_min:
+                            k_id = item.get('kuliah') or item.get('nomor') or item.get('id_kuliah')
+                            for c in self.courses_cache:
+                                mk_obj = c.get('nama_matakuliah') or c.get('matakuliah')
+                                mk_name = mk_obj.get('nama') if isinstance(mk_obj, dict) else (mk_obj or "")
+                                if c.get('nomor') == k_id or (item.get('matakuliah') and item.get('matakuliah') in mk_name):
+                                    return c
+                    except Exception:
+                        pass
+        return None
+
+    def scan_and_attend(self, notify_callback=None, manual=False):
+        now_wib = get_wib_now()
+        now_str = get_wib_str()
+        today_str = now_wib.strftime("%Y-%m-%d")
+
+        if not self.ensure_valid_session():
+            return f"❌ <b>[{self.name}]</b> Gagal otentikasi SSO PENS."
+
+        self.update_cache()
+        if not self.courses_cache:
+            return f"⚠️ <b>[{self.name}]</b> Data mata kuliah kosong atau gagal dimuat."
+
+        found_open = 0
+        results = []
+
+        active_course = self.get_active_course_now()
+        courses_to_scan = list(self.courses_cache)
+        if active_course:
+            k_act_id = active_course.get('nomor')
+            courses_to_scan = [c for c in courses_to_scan if c.get('nomor') == k_act_id] + [c for c in courses_to_scan if c.get('nomor') != k_act_id]
+
+        for c in courses_to_scan:
+            k_id = c.get('nomor')
+            schema = c.get('jenis_schema') or c.get('jenisSchema') or 0
+            mk_obj = c.get('nama_matakuliah') or c.get('matakuliah')
+            mk_nama = mk_obj.get('nama') if isinstance(mk_obj, dict) else (mk_obj or f"Kuliah #{k_id}")
+            dosen = c.get('dosen') or "Dosen Pengampu"
+            kuliah_asal = c.get('kuliah_asal') or k_id
+
+            try:
+                pres_resp = self.session.get(
+                    'https://ethol.pens.ac.id/api/presensi/aktif-kuliah',
+                    params={'kuliah': k_id, 'jenis_schema': schema},
+                    timeout=8
+                )
+
+                if pres_resp.status_code == 401:
+                    if self.login_cas():
+                        pres_resp = self.session.get(
+                            'https://ethol.pens.ac.id/api/presensi/aktif-kuliah',
+                            params={'kuliah': k_id, 'jenis_schema': schema},
+                            timeout=8
+                        )
+                    else:
+                        continue
+
+                if pres_resp.status_code == 200:
+                    pres_data = pres_resp.json()
+                    key = self.extract_active_key(pres_data)
+
+                    if key:
+                        found_open += 1
+                        unique_today_key = f"{today_str}_{key}"
+                        if key in self.attended_keys or unique_today_key in self.attended_keys:
+                            results.append(f"ℹ️ <b>[{self.name}] {mk_nama}</b>: Sudah tercatat hadir.")
+                            continue
+
+                        logger.info(f"[{self.name}] ⚡ Presensi Terbuka Ditemukan: {mk_nama} (Key: {key})")
+                        payload = {
+                            "kuliah": k_id,
+                            "jenis_schema": schema,
+                            "mahasiswa": self.user_info.get('nomor') if self.user_info else None,
+                            "key": key,
+                            "kuliah_asal": kuliah_asal
+                        }
+                        submit_resp = self.session.post('https://ethol.pens.ac.id/api/presensi/mahasiswa', json=payload, timeout=10)
+
+                        if submit_resp.status_code == 401:
+                            if self.login_cas():
+                                payload["mahasiswa"] = self.user_info.get('nomor') if self.user_info else None
+                                submit_resp = self.session.post('https://ethol.pens.ac.id/api/presensi/mahasiswa', json=payload, timeout=10)
+
+                        if submit_resp.status_code == 200:
+                            res_json = submit_resp.json()
+                            pesan = res_json.get('pesan') or res_json.get('message') or 'Berhasil'
+                            is_success = (
+                                res_json.get('sukses') or
+                                res_json.get('success') or
+                                res_json.get('status') in [200, "200", True] or
+                                "sudah" in str(pesan).lower() or
+                                "berhasil" in str(pesan).lower()
+                            )
+
+                            if is_success:
+                                mhs_nama = self.user_info.get('nama') if self.user_info else self.name
+                                nrp_str = f" ({self.user_info.get('nipnrp')})" if self.user_info and self.user_info.get('nipnrp') else ""
+                                success_msg = (
+                                    "🎉 <b>PRESENSI BERHASIL DICATAT!</b>\n\n"
+                                    f"👤 <b>Mahasiswa:</b> {mhs_nama}{nrp_str}\n"
+                                    f"📚 <b>Mata Kuliah:</b> {mk_nama}\n"
+                                    f"👨‍🏫 <b>Dosen:</b> {dosen}\n"
+                                    f"🔑 <b>Key:</b> <code>{key}</code>\n"
+                                    f"🕒 <b>Waktu:</b> {now_str}\n"
+                                    f"💬 <b>Respon:</b> {pesan}"
+                                )
+                                logger.info(f"[{self.name}] Berhasil hadir: {mk_nama} - {pesan}")
+                                if notify_callback:
+                                    notify_callback(self, success_msg, is_success=True)
+                                self.attended_keys.add(key)
+                                self.attended_keys.add(unique_today_key)
+                                self.save_attended_state()
+                                results.append(f"✅ <b>[{self.name}] {mk_nama}</b>: {pesan}")
+                            else:
+                                msg = f"⚠️ [{self.name}] {mk_nama}: {pesan}"
+                                logger.warning(msg)
+                                if notify_callback:
+                                    notify_callback(self, msg, is_success=False)
+                                results.append(msg)
+                        else:
+                            err = f"❌ [{self.name}] Gagal kirim presensi {mk_nama} (HTTP {submit_resp.status_code})"
+                            logger.error(err)
+                            results.append(err)
+            except Exception as e:
+                logger.error(f"[{self.name}] Error parse presensi {mk_nama}: {e}")
+
+        if manual:
+            if found_open == 0:
+                return f"✅ <b>[{self.name}]</b> Tidak ada presensi terbuka ({len(self.courses_cache)} mata kuliah)."
+            return "\n".join(results)
+        return "Scan selesai."
+
 class EtholBot:
     def __init__(self):
         if not os.path.exists(CRED_FILE):
@@ -162,6 +467,9 @@ class EtholBot:
         self.last_interaction_msg_ids = []
         self.force_siaga = False
         self.current_mode = None
+        self.accounts = []
+        self.wa_config = {}
+        self.load_accounts()
 
     def load_attended_state(self):
         if os.path.exists(STATE_FILE):
@@ -183,6 +491,202 @@ class EtholBot:
                 }, f, indent=2)
         except Exception as e:
             logger.warning(f"Gagal menyimpan state: {e}")
+
+
+    def load_accounts(self):
+        self.accounts = []
+        self.wa_config = {}
+        acc_file = resolve_file("accounts.json")
+        if os.path.exists(acc_file):
+            try:
+                with open(acc_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    accs = data.get("accounts", [])
+                    self.wa_config = data.get("whatsapp", {})
+                    for item in accs:
+                        acc = StudentAccount(
+                            name=item.get("name", "Mahasiswa"),
+                            username=item.get("username", ""),
+                            password=item.get("password", ""),
+                            wa_target=item.get("wa_target", ""),
+                            telegram_chat_id=item.get("telegram_chat_id", "")
+                        )
+                        self.accounts.append(acc)
+            except Exception as e:
+                logger.error(f"Gagal membaca accounts.json: {e}")
+
+        # Fallback jika accounts.json belum ada
+        if not self.accounts:
+            primary_name = "Utama"
+            if self.user_info and self.user_info.get("nama"):
+                primary_name = self.user_info.get("nama")
+            self.accounts.append(StudentAccount(
+                name=primary_name,
+                username=self.username,
+                password=self.password,
+                telegram_chat_id=self.tg_chat_id
+            ))
+
+    def send_whatsapp(self, phone, message):
+        if not phone or not self.wa_config:
+            return False
+        provider = self.wa_config.get("provider", "fonnte").lower()
+        api_key = self.wa_config.get("api_key", "")
+        endpoint = self.wa_config.get("endpoint_url", "https://api.fonnte.com/send")
+        try:
+            if provider == "fonnte":
+                headers = {"Authorization": api_key}
+                payload = {"target": phone, "message": message, "countryCode": "62"}
+                r = requests.post(endpoint, headers=headers, data=payload, timeout=8)
+                return r.status_code in [200, 201]
+            elif provider in ["generic", "webhook", "wppconnect"]:
+                headers = {"Content-Type": "application/json"}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                payload = {"phone": phone, "message": message}
+                r = requests.post(endpoint, headers=headers, json=payload, timeout=8)
+                return r.status_code in [200, 201]
+        except Exception as e:
+            logger.error(f"Gagal kirim WhatsApp ke {phone}: {e}")
+        return False
+
+    def notify_attendance(self, student_acc, text, is_success=True):
+        self.send_tg(text)
+        if student_acc.telegram_chat_id and student_acc.telegram_chat_id != self.tg_chat_id:
+            try:
+                url = f"https://api.telegram.org/bot{self.tg_token}/sendMessage"
+                requests.post(url, json={"chat_id": student_acc.telegram_chat_id, "text": text, "parse_mode": "HTML"}, timeout=6)
+            except Exception:
+                pass
+        title = "Presensi Berhasil!" if is_success else "Status Presensi"
+        send_os_notification(title, f"[{student_acc.name}] {to_plain_text(text)[:100]}")
+        wa_target = student_acc.wa_target or self.wa_config.get("target_phone")
+        if wa_target:
+            self.send_whatsapp(wa_target, to_plain_text(text))
+
+    def format_accounts_list(self):
+        if not self.accounts:
+            return "📋 <b>DAFTAR AKUN MAHASISWA:</b>\n\nBelum ada akun terdaftar."
+
+        txt = (
+            "👥 <b>DAFTAR AKUN KON-THOL PUBLIK</b>\n"
+            f"<i>Total Terdaftar: {len(self.accounts)} Akun Mahasiswa</i>\n\n"
+        )
+        for idx, acc in enumerate(self.accounts, 1):
+            user = acc.username
+            if "@" in user:
+                u_p, d_p = user.split("@", 1)
+                masked_user = (u_p[:3] + "***@" + d_p) if len(u_p) > 3 else user
+            else:
+                masked_user = (user[:3] + "***") if len(user) > 3 else user
+
+            tag = " (Akun Utama)" if idx == 1 else ""
+            status_login = "🟢 Terhubung" if acc.user_info else "🟡 Siaga / Belum Login"
+            nrp_str = f"NRP: {acc.user_info.get('nipnrp')}" if acc.user_info and acc.user_info.get('nipnrp') else "Belum sinkron"
+            wa_str = acc.wa_target if acc.wa_target else "-"
+
+            txt += (
+                f"<b>{idx}. {acc.name}</b>{tag}\n"
+                f"   • Email  : <code>{masked_user}</code>\n"
+                f"   • Status : {status_login} ({nrp_str})\n"
+                f"   • WA     : <code>{wa_str}</code>\n\n"
+            )
+
+        txt += (
+            "💡 <b>Panduan Kelola Multi-Akun:</b>\n"
+            "• Tambah akun : <code>/addaccount Nama | email | password [| wa]</code>\n"
+            "• Hapus akun  : <code>/delaccount email_atau_nomor</code>\n"
+            "• Scan semua  : <code>/scanall</code>"
+        )
+        return txt
+
+    def add_account(self, name, username, password, wa_target="", tg_id=""):
+        test_acc = StudentAccount(name=name, username=username, password=password, wa_target=wa_target, telegram_chat_id=tg_id)
+        if not test_acc.login_cas():
+            return False, "Kredensial ditolak oleh SSO PENS (Email atau Password salah)."
+
+        acc_file = resolve_file("accounts.json")
+        acc_data = {"whatsapp": self.wa_config, "accounts": []}
+        if os.path.exists(acc_file):
+            try:
+                with open(acc_file, "r", encoding="utf-8") as f:
+                    acc_data = json.load(f)
+            except Exception:
+                pass
+        else:
+            if self.accounts:
+                prim = self.accounts[0]
+                acc_data["accounts"].append({
+                    "name": prim.name,
+                    "username": prim.username,
+                    "password": prim.password,
+                    "wa_target": prim.wa_target,
+                    "telegram_chat_id": prim.telegram_chat_id
+                })
+
+        accs = acc_data.setdefault("accounts", [])
+        for a in accs:
+            if a.get("username", "").lower() == username.lower():
+                a["name"] = name
+                a["password"] = password
+                a["wa_target"] = wa_target
+                break
+        else:
+            accs.append({
+                "name": name,
+                "username": username,
+                "password": password,
+                "wa_target": wa_target,
+                "telegram_chat_id": tg_id
+            })
+
+        try:
+            with open(acc_file, "w", encoding="utf-8") as f:
+                json.dump(acc_data, f, indent=4)
+        except Exception as e:
+            return False, f"Gagal menulis accounts.json: {e}"
+
+        self.load_accounts()
+        mhs_name = test_acc.user_info.get('nama', name) if test_acc.user_info else name
+        nrp = test_acc.user_info.get('nipnrp', '') if test_acc.user_info else ''
+        return True, f"Mahasiswa: <b>{mhs_name}</b> (NRP: <code>{nrp}</code>)"
+
+    def del_account(self, target):
+        acc_file = resolve_file("accounts.json")
+        if not os.path.exists(acc_file):
+            return False, "Berkas accounts.json belum ada."
+
+        try:
+            with open(acc_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            accs = data.get("accounts", [])
+            if not accs:
+                return False, "Tidak ada akun terdaftar dalam accounts.json."
+
+            removed_name = None
+            if target.isdigit():
+                idx = int(target) - 1
+                if 0 <= idx < len(accs):
+                    removed_name = accs[idx].get("name")
+                    del accs[idx]
+            else:
+                for idx, a in enumerate(accs):
+                    if a.get("username", "").lower() == target.lower():
+                        removed_name = a.get("name")
+                        del accs[idx]
+                        break
+
+            if not removed_name:
+                return False, f"Akun '{target}' tidak ditemukan."
+
+            data["accounts"] = accs
+            with open(acc_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+
+            self.load_accounts()
+            return True, f"Akun <b>{removed_name}</b> berhasil dihapus dari daftar monitoring."
+        except Exception as e:
+            return False, f"Gagal menghapus akun: {e}"
 
     def is_cooldown_active_today(self):
         return self.cooldown_date == get_wib_now().strftime("%Y-%m-%d")
@@ -381,6 +885,10 @@ class EtholBot:
             f"{status_box}\n\n"
             "<b>PANDUAN PERINTAH:</b>\n"
             "⚡ /scan atau /absen - Scan presensi seketika\n"
+            "👥 /accounts - Daftar akun multi-mahasiswa\n"
+            "➕ /addaccount - Tambah akun baru\n"
+            "➖ /delaccount - Hapus akun terdaftar\n"
+            "⚡ /scanall - Scan serentak semua akun\n"
             "📅 /jadwal - Jadwal perkuliahan mingguan\n"
             "📊 /rekap - Rekapitulasi kehadiran semester\n"
             "📝 /tugas - Daftar tugas pending & tautan\n"
@@ -389,7 +897,7 @@ class EtholBot:
             "💤 /cooldown - Istirahatkan scanner hari ini\n"
             "⚡ /resume - Batalkan cooldown & kembali siaga\n"
             "🔄 /relogin - Sinkronisasi ulang sesi SSO PENS\n"
-            "🔑 /setcred - Ganti akun E-THOL (/setcred email password)"
+            "🔑 /setcred - Ganti akun utama (/setcred email password)"
             + credit
         )
 
@@ -617,6 +1125,18 @@ class EtholBot:
         now_str = get_wib_str()
         today_str = now_wib.strftime("%Y-%m-%d")
         self.last_scan_time = now_str
+
+        # Jika terdapat multi-account di self.accounts
+        if len(self.accounts) > 1:
+            all_results = []
+            for acc in self.accounts:
+                res = acc.scan_and_attend(notify_callback=self.notify_attendance, manual=manual)
+                if manual:
+                    all_results.append(res)
+                time.sleep(1)
+            if manual:
+                return "📋 <b>HASIL PEMINDAIAN MULTI-AKUN:</b>\n\n" + "\n\n".join(all_results)
+            return "Scan multi-akun selesai."
 
         if not self.ensure_valid_session():
             return "❌ Gagal mengautentikasi ke SSO PENS."
@@ -1105,7 +1625,76 @@ class EtholBot:
         if loading_id:
             self.advance_loading_bar(loading_id, "Mengambil data...")
 
-        if c in ['/scan', '/absen', 'scan', 'absen']:
+        if cmd.startswith('/addaccount') or cmd.startswith('/addakun'):
+            if user_msg_id:
+                self.delete_tg_message(user_msg_id)
+
+            raw_args = cmd[len(cmd.split()[0]):].strip()
+            if '|' in raw_args:
+                parts = [p.strip() for p in raw_args.split('|') if p.strip()]
+            else:
+                parts = raw_args.split()
+
+            if len(parts) < 3:
+                res_id = self.send_tg(
+                    "⚠️ <b>Format Perintah /addaccount:</b>\n"
+                    "<code>/addaccount Nama Mahasiswa | email@student.pens.ac.id | password [| no_wa]</code>\n\n"
+                    "<i>Contoh:</i>\n"
+                    "<code>/addaccount Nazriel | nazriel@student.pens.ac.id | Rahasia123 | 08123456789</code>"
+                    + credit
+                )
+                if res_id: current_batch.append(res_id)
+            else:
+                name = parts[0]
+                user_acc = parts[1]
+                pass_acc = parts[2]
+                wa = parts[3] if len(parts) > 3 else ""
+
+                if loading_id:
+                    self.advance_loading_bar(loading_id, "Memvalidasi kredensial ke SSO PENS...")
+
+                succ, info = self.add_account(name, user_acc, pass_acc, wa_target=wa)
+                if succ:
+                    res_id = self.send_tg(
+                        f"✅ <b>AKUN BERHASIL DITAMBAHKAN</b>\n\n"
+                        f"{info}\n"
+                        f"Akun ini sekarang otomatis dipantau oleh KON-THOL Multi-Account!"
+                        + credit
+                    )
+                else:
+                    res_id = self.send_tg(
+                        f"❌ <b>GAGAL MENAMBAHKAN AKUN</b>\n\n"
+                        f"{info}"
+                        + credit
+                    )
+                if res_id: current_batch.append(res_id)
+
+        elif cmd.startswith('/delaccount') or cmd.startswith('/delakun'):
+            parts = cmd.split(maxsplit=1)
+            if len(parts) < 2:
+                res_id = self.send_tg(
+                    "⚠️ <b>Format Perintah /delaccount:</b>\n"
+                    "<code>/delaccount email@student.pens.ac.id</code> atau nomor urut (contoh: <code>/delaccount 2</code>)"
+                    + credit
+                )
+                if res_id: current_batch.append(res_id)
+            else:
+                target = parts[1].strip()
+                succ, msg = self.del_account(target)
+                icon = "✅" if succ else "❌"
+                res_id = self.send_tg(f"{icon} {msg}{credit}")
+                if res_id: current_batch.append(res_id)
+
+        elif c in ['/accounts', '/multi', '/daftarakun', 'accounts', 'multi']:
+            res_id = self.send_tg(f"{self.format_accounts_list()}{credit}")
+            if res_id: current_batch.append(res_id)
+
+        elif c in ['/scanall', 'scanall']:
+            res = self.scan_and_attend(manual=True)
+            res_id = self.send_tg(f"{res}{credit}")
+            if res_id: current_batch.append(res_id)
+
+        elif c in ['/scan', '/absen', 'scan', 'absen']:
             res = self.scan_and_attend(manual=True)
             res_id = self.send_tg(f"{res}{credit}")
             if res_id:
@@ -1286,7 +1875,12 @@ class EtholBot:
         """Eksekusi perintah dari Terminal / CLI (mencetak teks bersih tanpa tag HTML)."""
         cmd = command.lower().strip()
         credit = "\n\n✦ Creator : Gungna"
-        if cmd in ['scan', 'absen']:
+        if cmd in ['accounts', 'multi']:
+            print(to_plain_text(self.format_accounts_list()) + credit)
+        elif cmd in ['scanall']:
+            print("[*] Sedang memindai presensi seluruh akun terdaftar...")
+            print(to_plain_text(self.scan_and_attend(manual=True)) + credit)
+        elif cmd in ['scan', 'absen']:
             print("[*] Sedang memindai presensi di server ETHOL...")
             print(to_plain_text(self.scan_and_attend(manual=True)) + credit)
         elif cmd in ['jadwal', 'matkul']:

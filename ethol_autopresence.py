@@ -591,14 +591,29 @@ class EtholBot:
                 masked_user = (user[:3] + "***") if len(user) > 3 else user
 
             tag = " (Akun Utama)" if idx == 1 else ""
-            status_login = "🟢 Terhubung" if acc.user_info else "🟡 Siaga / Belum Login"
             nrp_str = f"NRP: {acc.user_info.get('nipnrp')}" if acc.user_info and acc.user_info.get('nipnrp') else "Belum sinkron"
             wa_str = acc.wa_target if acc.wa_target else "-"
+
+            now_wib = get_wib_now()
+            time_val = now_wib.hour + now_wib.minute / 60.0
+
+            if not acc.user_info:
+                status_str = "🔴 Terputus (Perlu login ulang)"
+            elif self.is_cooldown_active_today():
+                status_str = f"🟡 Cooldown / Standby ({nrp_str})"
+            elif self.force_siaga:
+                status_str = f"🟢 Siaga Penuh [Override] ({nrp_str})"
+            elif time_val >= 21.5 or time_val < 4.0:
+                status_str = f"💤 Istirahat Malam ({nrp_str})"
+            elif 4.0 <= time_val < 6.5:
+                status_str = f"🌅 Siaga Subuh ({nrp_str})"
+            else:
+                status_str = f"🟢 Terhubung ({nrp_str})"
 
             txt += (
                 f"<b>{idx}. {acc.name}</b>{tag}\n"
                 f"   • Email  : <code>{masked_user}</code>\n"
-                f"   • Status : {status_login} ({nrp_str})\n"
+                f"   • Status : {status_str}\n"
                 f"   • WA     : <code>{wa_str}</code>\n\n"
             )
 

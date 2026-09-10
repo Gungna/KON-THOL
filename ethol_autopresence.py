@@ -527,6 +527,14 @@ class EtholBot:
                 telegram_chat_id=self.tg_chat_id
             ))
 
+        # Pastikan sesi dan profil mahasiswa tersinkronkan
+        for acc in self.accounts:
+            if not acc.user_info:
+                try:
+                    acc.ensure_valid_session()
+                except Exception as e:
+                    logger.warning(f"[{acc.name}] Gagal sinkronisasi sesi awal: {e}")
+
     def send_whatsapp(self, phone, message):
         if not phone or not self.wa_config:
             return False
@@ -573,6 +581,8 @@ class EtholBot:
             f"<i>Total Terdaftar: {len(self.accounts)} Akun Mahasiswa</i>\n\n"
         )
         for idx, acc in enumerate(self.accounts, 1):
+            if not acc.user_info:
+                acc.ensure_valid_session()
             user = acc.username
             if "@" in user:
                 u_p, d_p = user.split("@", 1)
@@ -647,6 +657,12 @@ class EtholBot:
             return False, f"Gagal menulis accounts.json: {e}"
 
         self.load_accounts()
+        for a in self.accounts:
+            if a.username.lower() == username.lower():
+                a.user_info = test_acc.user_info
+                a.session = test_acc.session
+                a.last_auth_time = test_acc.last_auth_time
+                break
         mhs_name = test_acc.user_info.get('nama', name) if test_acc.user_info else name
         nrp = test_acc.user_info.get('nipnrp', '') if test_acc.user_info else ''
         return True, f"Mahasiswa: <b>{mhs_name}</b> (NRP: <code>{nrp}</code>)"
@@ -700,7 +716,7 @@ class EtholBot:
         self.save_attended_state()
         self.current_mode = "COOLDOWN"
         self.update_telegram_menu_ui()
-        return True, f"Mode Cooldown aktif untuk hari ini ({today}). Polling agresif dijeda hingga esok hari."
+        return True, f"Mode Cooldown aktif untuk hari ini ({today}). Pemantauan otomatis diistirahatkan hingga esok hari agar hemat daya."
 
     def deactivate_cooldown(self):
         self.cooldown_date = None
@@ -985,7 +1001,7 @@ class EtholBot:
             msg = (
                 "🟡 <b>MODE COOLDOWN AKTIF</b>\n"
                 f"🕒 Waktu: <code>{now_time_str} WIB</code>\n\n"
-                "Polling agresif ditiadakan hingga pergantian hari (00:00 WIB)."
+                "Pemantauan otomatis diistirahatkan hingga pergantian hari (00:00 WIB) untuk menghemat daya."
             )
         else:
             return
@@ -1834,12 +1850,16 @@ class EtholBot:
                     time.sleep(20)
                     continue
 
-                # Siaga Normal: scan tiap 60s agar presensi singkat tidak terlewat
-                scan_target_interval = 60 if interval > 60 else interval
-                if time.time() - last_scan_tick > scan_target_interval:
+                # Siaga Normal: scan adaptif 30 detik s/d 60 detik (hemat daya & human-like)
+                import random
+                if not hasattr(self, '_current_normal_interval') or not self._current_normal_interval:
+                    self._current_normal_interval = random.randint(30, 60)
+
+                if time.time() - last_scan_tick > self._current_normal_interval:
                     self.check_notifications_trigger()
                     self.scan_and_attend(manual=False)
                     last_scan_tick = time.time()
+                    self._current_normal_interval = random.randint(30, 60)
                 time.sleep(5)
             except Exception as e:
                 logger.error(f"Error pada auto loop: {e}")

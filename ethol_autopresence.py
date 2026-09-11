@@ -416,6 +416,304 @@ class StudentAccount:
             return "\n".join(results)
         return "Scan selesai."
 
+
+    def get_attendance_statistics(self):
+        self.update_cache()
+        nomor_mhs = self.user_info.get('nomor') if self.user_info else None
+        if not nomor_mhs:
+            return None
+
+        today_date_str = get_wib_now().strftime("%d-%m-%Y")
+        total_dosen_semester = 0
+        total_mhs_semester = 0
+        total_dosen_today = 0
+        total_mhs_today = 0
+        course_breakdown = []
+
+        for c in self.courses_cache:
+            k_id = c.get('nomor')
+            schema = c.get('jenis_schema') or c.get('jenisSchema') or 0
+            mk = c.get('nama_matakuliah') or c.get('matakuliah')
+            mk_name = mk.get('nama') if isinstance(mk, dict) else mk
+            dosen_nomor = c.get('nomor_dosen')
+
+            try:
+                mhs_resp = self.session.get(
+                    'https://ethol.pens.ac.id/api/presensi/riwayat',
+                    params={'kuliah': k_id, 'jenis_schema': schema, 'nomor': nomor_mhs},
+                    timeout=5
+                )
+                mhs_list = mhs_resp.json() if mhs_resp.status_code == 200 and isinstance(mhs_resp.json(), list) else []
+
+                dosen_resp = self.session.get(
+                    'https://ethol.pens.ac.id/api/presensi/get-tanggal-presensi-dosen-per-semester',
+                    params={'tahun': self.tahun_aktif, 'semester': self.semester_aktif, 'kuliah': k_id, 'dosen': dosen_nomor},
+                    timeout=5
+                )
+                dosen_list = dosen_resp.json() if dosen_resp.status_code == 200 and isinstance(dosen_resp.json(), list) else []
+
+                d_today = sum(1 for d in dosen_list if today_date_str in str(d.get('waktu_indonesia', '')) or today_date_str in str(d.get('waktu', '')))
+                m_today = sum(1 for m in mhs_list if today_date_str in str(m.get('tanggal', '')) or today_date_str in str(m.get('waktu_indonesia', '')))
+
+                total_dosen_semester += len(dosen_list)
+                total_mhs_semester += len(mhs_list)
+                total_dosen_today += d_today
+                total_mhs_today += m_today
+
+                course_breakdown.append({
+                    "kuliah_id": k_id,
+                    "nama": mk_name,
+                    "hadir": len(mhs_list),
+                    "total": len(dosen_list),
+                    "d_today": d_today,
+                    "m_today": m_today
+                })
+            except Exception:
+                pass
+
+        pct = 100.0 if total_dosen_semester == 0 else (total_mhs_semester / total_dosen_semester) * 100.0
+        return {
+            "percentage": pct,
+            "total_dosen_semester": total_dosen_semester,
+            "total_mhs_semester": total_mhs_semester,
+            "total_dosen_today": total_dosen_today,
+            "total_mhs_today": total_mhs_today,
+            "breakdown": course_breakdown
+        }
+
+    def get_pending_tasks(self):
+        self.update_cache()
+        pending = []
+        for c in self.courses_cache:
+            k_id = c.get('nomor')
+            schema = c.get('jenis_schema') or c.get('jenisSchema') or 0
+            mk = c.get('nama_matakuliah') or c.get('matakuliah')
+            mk_name = mk.get('nama') if isinstance(mk, dict) else mk
+
+            try:
+                res = self.session.get('https://ethol.pens.ac.id/api/tugas', params={'kuliah': k_id, 'jenisSchema': schema}, timeout=5)
+                if res.status_code == 200:
+                    tasks = res.json()
+                    if isinstance(tasks, list):
+                        for t in tasks:
+                            if not t.get('submission_time') and str(t.get('tutup', '0')) != "1":
+                                pending.append({
+                                    "kuliah_id": k_id,
+                                    "matkul": mk_name,
+                                    "title": t.get('title') or t.get('judul'),
+                                    "deadline": t.get('deadline_indonesia') or t.get('deadline') or "-"
+                                })
+            except Exception:
+                pass
+        return pending
+
+    def format_status_text(self, bot_ref=None):
+        nama = self.user_info.get('nama', self.name) if self.user_info else self.name
+        nrp = self.user_info.get('nipnrp', 'N/A') if self.user_info else '-'
+        now_str = get_wib_str()
+
+        now_wib = get_wib_now()
+        time_val = now_wib.hour + now_wib.minute / 60.0
+
+        is_cooldown = bot_ref.is_cooldown_active_today() if bot_ref else False
+        force_siaga = bot_ref.force_siaga if bot_ref else False
+        cooldown_date = bot_ref.cooldown_date if bot_ref else ""
+
+        if is_cooldown:
+            scanner_status = f"🟡 Cooldown ({cooldown_date})"
+            scanner_sub = "💤 Jeda s/d 00:00 WIB"
+            jadwal_relogin = "Auto re-login esok hari (00:00 WIB)"
+            aktivitas = "Istirahat (monitoring jeda)"
+        elif force_siaga:
+            scanner_status = "🟢 Siaga Penuh (Override Manual)"
+            scanner_sub = "• Memantau aktif (Istirahat Malam di-bypass)"
+            jadwal_relogin = "Pengecekan sesi berkala"
+            aktivitas = "Siaga penuh memantau presensi malam"
+        elif time_val >= 21.5 or time_val < 4.0:
+            scanner_status = "💤 Istirahat Malam"
+            scanner_sub = "• Jeda malam (dosen offline)"
+            jadwal_relogin = "Siaga subuh (04:00 WIB)"
+            aktivitas = "Standby malam (gunakan /resume jika ada kuliah)"
+        elif 4.0 <= time_val < 6.5:
+            scanner_status = "🌅 Siaga Subuh"
+            scanner_sub = "• Memantau persiapan kuliah pagi"
+            jadwal_relogin = "Pengecekan sesi berkala"
+            aktivitas = "Siaga subuh menyambut jadwal kuliah"
+        else:
+            scanner_status = "🟢 Siaga Penuh"
+            scanner_sub = "• Standby memantau presensi"
+            jadwal_relogin = "Pengecekan sesi berkala"
+            aktivitas = "Siaga memantau presensi & jadwal"
+
+        tg_status = f"🟢 Terhubung (<code>{self.telegram_chat_id}</code>)" if self.telegram_chat_id else "⚪ Belum Ditautkan"
+
+        return (
+            "<b>┌─ DATA MAHASISWA ─────────────────</b>\n"
+            f"│ Mahasiswa      : {nama}\n"
+            f"│ NRP            : <code>{nrp}</code>\n"
+            f"│ Telegram       : {tg_status}\n"
+            f"│ Waktu Server   : {now_str}\n"
+            "<b>├─ SESI LOGIN & RE-LOGIN ───────────</b>\n"
+            "│ Sesi Login     : 🟢 Terhubung (Aktif)\n"
+            f"│ Terakhir Login : <code>{self.last_auth_time}</code>\n"
+            f"│ Jadwal Re-login: {jadwal_relogin}\n"
+            "<b>├─ OPERASIONAL SCANNER ────────────</b>\n"
+            f"│ Status Scanner : {scanner_status}\n"
+            f"│                  {scanner_sub}\n"
+            f"│ Aktivitas      : {aktivitas}\n"
+            "<b>└──────────────────────────────────</b>"
+        )
+
+    def format_rekap_detail(self):
+        stats = self.get_attendance_statistics()
+        mhs_nama = self.user_info.get('nama', self.name) if self.user_info else self.name
+        if not stats:
+            return f"Gagal memuat rekapitulasi kehadiran untuk <b>{mhs_nama}</b> dari server ETHOL."
+
+        now_wib = get_wib_now()
+        today_idx = now_wib.weekday()
+        day_names = {0: "senin", 1: "selasa", 2: "rabu", 3: "kamis", 4: "jumat", 5: "sabtu", 6: "minggu"}
+        today_day_clean = day_names.get(today_idx, "")
+
+        def clean_day(d):
+            return str(d or '').lower().replace("'", "").replace("`", "").strip()
+
+        courses_scheduled_today = set()
+        for item in self.schedule_cache:
+            if clean_day(item.get('hari')) == today_day_clean:
+                k_id = item.get('nomor') or item.get('kuliah')
+                mk_name = item.get('matakuliah')
+                if k_id: courses_scheduled_today.add(k_id)
+                if mk_name: courses_scheduled_today.add(str(mk_name))
+
+        txt = (
+            f"<b>REKAPITULASI KEHADIRAN: {mhs_nama}</b>\n\n"
+            f"• Rata-rata Total : <b>{stats['percentage']:.1f}%</b>\n"
+            f"• Total Kehadiran : {stats['total_mhs_semester']} dari {stats['total_dosen_semester']} sesi perkuliahan\n"
+            f"• Hadir Hari Ini  : {stats['total_mhs_today']} sesi tervalidasi hadir\n\n"
+            "<b>RINCIAN PER MATA KULIAH:</b>\n\n"
+        )
+
+        for item in stats['breakdown']:
+            mk_name = item['nama']
+            k_id = item.get('kuliah_id')
+            d_today = item.get('d_today', 0)
+            m_today = item.get('m_today', 0)
+            hadir_sem = item.get('hadir', 0)
+
+            is_today = (k_id in courses_scheduled_today or mk_name in courses_scheduled_today)
+
+            if is_today:
+                if m_today > 0:
+                    status_sesi = f"🟢 <code>[Sesi Selesai: Tervalidasi Hadir ({m_today} Sesi)]</code>"
+                elif d_today > 0:
+                    status_sesi = "⚠️ <code>[Sesi Terbuka: Belum Hadir]</code>"
+                else:
+                    status_sesi = "⚪ <code>[Belum Ada Sesi Dibuka Dosen]</code>"
+
+                txt += (
+                    f"• <b>{mk_name}</b> (Hari Ini)\n"
+                    f"  Status Sesi : {status_sesi}\n"
+                    f"  Total Hadir : {hadir_sem} kali pertemuan dalam semester ini.\n\n"
+                )
+            elif m_today > 0 or d_today > 0:
+                txt += (
+                    f"• <b>{mk_name}</b> (Luar Jadwal)\n"
+                    f"  Status Sesi : 🟠 <code>[Sesi Luar Jadwal: Hadir ({m_today} Sesi)]</code>\n"
+                    f"  Total Hadir : {hadir_sem} kali pertemuan dalam semester ini.\n\n"
+                )
+            else:
+                txt += (
+                    f"• <b>{mk_name}</b>\n"
+                    f"  Total Hadir : {hadir_sem} kali pertemuan dalam semester ini.\n\n"
+                )
+        return txt
+
+    def format_tugas_text(self):
+        tasks = self.get_pending_tasks()
+        mhs_nama = self.user_info.get('nama', self.name) if self.user_info else self.name
+        if not tasks:
+            return f"<b>DAFTAR TUGAS KULIAH ({mhs_nama})</b>\n\nSemua tugas semester ini telah dikumpulkan atau tidak ada tugas aktif."
+
+        txt = f"<b>DAFTAR TUGAS PENDING: {mhs_nama}</b>\n\n"
+        links_dict = {}
+
+        for idx, t in enumerate(tasks, 1):
+            k_id = t.get('kuliah_id')
+            mk = t.get('matkul', 'Mata Kuliah')
+            if k_id and mk not in links_dict:
+                links_dict[mk] = f"https://ethol.pens.ac.id/mahasiswa/matakuliah/{k_id}/tugas"
+
+            txt += (
+                f"<b>{idx}. {t['title']}</b>\n"
+                f"   Mata Kuliah : {mk}\n"
+                f"   Tenggat     : <code>{t['deadline']}</code>\n\n"
+            )
+
+        if len(links_dict) == 1:
+            _, url_tugas = next(iter(links_dict.items()))
+            txt += f"Tautan Web : {url_tugas}\n"
+        else:
+            txt += "<b>Tautan Web Pengumpulan:</b>\n"
+            for mk_name, url_tugas in links_dict.items():
+                txt += f"• {mk_name} :\n  {url_tugas}\n"
+
+        txt += (
+            "\n⚠️ <i>Catatan: Harap pastikan Anda sudah login ke akun ETHOL di browser "
+            "terlebih dahulu sebelum membuka tautan di atas agar dapat langsung diarahkan ke tugas tersebut.</i>"
+        )
+        return txt
+
+    def format_jadwal_text(self):
+        self.update_cache(force=True)
+        mhs_nama = self.user_info.get('nama', self.name) if self.user_info else self.name
+        if not self.schedule_cache:
+            return f"Data jadwal perkuliahan untuk <b>{mhs_nama}</b> belum tersedia."
+
+        now_wib = get_wib_now()
+        today_idx = now_wib.weekday()
+        day_names = {0: "senin", 1: "selasa", 2: "rabu", 3: "kamis", 4: "jumat", 5: "sabtu", 6: "minggu"}
+        today_day_clean = day_names.get(today_idx, "")
+
+        def clean_day(d):
+            return str(d or '').lower().replace("'", "").replace("`", "").strip()
+
+        def get_day_val(item):
+            if 'nomor_hari' in item and item['nomor_hari']:
+                return item['nomor_hari']
+            return DAY_ORDER.get(clean_day(item.get('hari', '')), 99)
+
+        sorted_jadwal = sorted(self.schedule_cache, key=lambda x: (get_day_val(x), x.get('jam_awal', '00:00')))
+
+        txt = f"<b>JADWAL KULIAH: {mhs_nama}</b> (Sem {self.semester_aktif}/{self.tahun_aktif}):\n"
+        curr_day = ""
+
+        for item in sorted_jadwal:
+            d_raw = str(item.get('hari', '') or '').strip()
+            if not d_raw or d_raw.lower() == "none":
+                d_raw = "Lainnya"
+            d_clean = clean_day(d_raw)
+
+            if d_raw != curr_day:
+                curr_day = d_raw
+                tag = " (HARI INI)" if d_clean == today_day_clean else ""
+                txt += f"\n🗓️ <b>[{curr_day.upper()}{tag}]</b>\n"
+
+            jam_awal = item.get('jam_awal', '-')
+            jam_akhir = item.get('jam_akhir', '-')
+            mk = item.get('matakuliah', '-')
+            dosen = item.get('dosen') or "Dosen Pengampu"
+            ruang = item.get('ruang') or "Online"
+
+            jam_str = "Fleksibel" if not jam_awal or jam_awal == "-" else f"{jam_awal} - {jam_akhir}"
+
+            txt += (
+                f"• <b>{mk}</b>\n"
+                f"  ⏰ <code>{jam_str} WIB</code> • 📍 {ruang}\n"
+                f"  👨‍🏫 <i>{dosen}</i>\n\n"
+            )
+        return txt
+
 class EtholBot:
     def __init__(self):
         if not os.path.exists(CRED_FILE):
@@ -463,8 +761,8 @@ class EtholBot:
         self.last_scan_time = "-"
         self.last_auth_time = "-"
         self.lock = threading.Lock()
-        self.main_menu_msg_id = None
-        self.last_interaction_msg_ids = []
+        self.chat_main_menu = {}
+        self.chat_last_interaction = {}
         self.force_siaga = False
         self.current_mode = None
         self.accounts = []
@@ -535,6 +833,94 @@ class EtholBot:
                 except Exception as e:
                     logger.warning(f"[{acc.name}] Gagal sinkronisasi sesi awal: {e}")
 
+    def get_account_by_chat_id(self, chat_id):
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return None
+        for acc in self.accounts:
+            if acc.telegram_chat_id and acc.telegram_chat_id == cid:
+                return acc
+        if self.tg_chat_id and cid == self.tg_chat_id and self.accounts:
+            return self.accounts[0]
+        return None
+
+    def is_admin(self, chat_id):
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return False
+        if self.tg_chat_id and cid == self.tg_chat_id:
+            return True
+        if self.accounts and self.accounts[0].telegram_chat_id and cid == self.accounts[0].telegram_chat_id:
+            return True
+        return False
+
+    def set_telegram_id(self, target, tg_id):
+        acc_file = resolve_file("accounts.json")
+        if not os.path.exists(acc_file):
+            return False, "Berkas accounts.json belum ada."
+        try:
+            with open(acc_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            accs = data.get("accounts", [])
+            target_acc = None
+            if target.isdigit():
+                idx = int(target) - 1
+                if 0 <= idx < len(accs):
+                    target_acc = accs[idx]
+            else:
+                for a in accs:
+                    if a.get("username", "").lower() == target.lower():
+                        target_acc = a
+                        break
+            if not target_acc:
+                return False, f"Akun '{target}' tidak ditemukan."
+
+            target_acc["telegram_chat_id"] = str(tg_id).strip()
+            with open(acc_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+            self.load_accounts()
+            return True, f"Telegram ID akun <b>{target_acc.get('name')}</b> berhasil diatur ke <code>{tg_id}</code>."
+        except Exception as e:
+            return False, f"Gagal mengupdate telegram ID: {e}"
+
+    def bind_telegram_account(self, chat_id, email, password):
+        chat_id_str = str(chat_id).strip()
+        email_str = email.strip()
+        acc_file = resolve_file("accounts.json")
+
+        if os.path.exists(acc_file):
+            try:
+                with open(acc_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                accs = data.get("accounts", [])
+                for a in accs:
+                    if a.get("username", "").lower() == email_str.lower():
+                        if a.get("password") != password:
+                            test_acc = StudentAccount(name=a.get("name"), username=email_str, password=password)
+                            if not test_acc.login_cas():
+                                return False, "Password tidak cocok dengan akun SSO PENS Anda."
+                            a["password"] = password
+
+                        a["telegram_chat_id"] = chat_id_str
+                        with open(acc_file, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=4)
+                        self.load_accounts()
+                        matched_acc = self.get_account_by_chat_id(chat_id_str)
+                        return True, matched_acc
+            except Exception as e:
+                return False, f"Gagal membaca konfigurasi: {e}"
+
+        test_acc = StudentAccount(name="Mahasiswa", username=email_str, password=password, telegram_chat_id=chat_id_str)
+        if not test_acc.login_cas():
+            return False, "Login ke SSO PENS gagal. Periksa kembali email dan password Anda."
+
+        m_name = test_acc.user_info.get("nama") if test_acc.user_info else "Mahasiswa"
+        succ, info = self.add_account(m_name, email_str, password, tg_id=chat_id_str)
+        if not succ:
+            return False, info
+        matched_acc = self.get_account_by_chat_id(chat_id_str)
+        return True, matched_acc
+
     def send_whatsapp(self, phone, message):
         if not phone or not self.wa_config:
             return False
@@ -592,7 +978,7 @@ class EtholBot:
 
             tag = " (Akun Utama)" if idx == 1 else ""
             nrp_str = f"NRP: {acc.user_info.get('nipnrp')}" if acc.user_info and acc.user_info.get('nipnrp') else "Belum sinkron"
-            wa_str = acc.wa_target if acc.wa_target else "-"
+            tg_str = f"🟢 Terhubung (<code>{acc.telegram_chat_id}</code>)" if acc.telegram_chat_id else "⚪ Belum Ditautkan"
 
             now_wib = get_wib_now()
             time_val = now_wib.hour + now_wib.minute / 60.0
@@ -612,14 +998,15 @@ class EtholBot:
 
             txt += (
                 f"<b>{idx}. {acc.name}</b>{tag}\n"
-                f"   • Email  : <code>{masked_user}</code>\n"
-                f"   • Status : {status_str}\n"
-                f"   • WA     : <code>{wa_str}</code>\n\n"
+                f"   • Email    : <code>{masked_user}</code>\n"
+                f"   • Status   : {status_str}\n"
+                f"   • Telegram : {tg_str}\n\n"
             )
 
         txt += (
-            "💡 <b>Panduan Kelola Multi-Akun:</b>\n"
-            "• Tambah akun : <code>/addaccount Nama | email | password [| wa]</code>\n"
+            "💡 <b>Panduan Kelola Akun Telegram:</b>\n"
+            "• Tambah akun : <code>/addaccount Nama | email | password [| telegram_id]</code>\n"
+            "• Tautkan Telegram : <code>/settelegram email_atau_nomor telegram_id</code>\n"
             "• Hapus akun  : <code>/delaccount email_atau_nomor</code>\n"
             "• Scan semua  : <code>/scanall</code>"
         )
@@ -752,8 +1139,9 @@ class EtholBot:
                 return candidate
         return None
 
-    def send_tg_photo(self, caption, photo_path=None):
-        if not self.tg_token or not self.tg_chat_id:
+    def send_tg_photo(self, caption, photo_path=None, chat_id=None):
+        target_chat = str(chat_id or self.tg_chat_id).strip()
+        if not self.tg_token or not target_chat:
             return None
         p = photo_path or self.get_banner_path()
         if p and os.path.exists(p) and len(caption) <= 1024:
@@ -761,7 +1149,7 @@ class EtholBot:
                 url = f"https://api.telegram.org/bot{self.tg_token}/sendPhoto"
                 with open(p, 'rb') as photo:
                     r = requests.post(url, data={
-                        "chat_id": self.tg_chat_id,
+                        "chat_id": target_chat,
                         "caption": caption,
                         "parse_mode": "HTML"
                     }, files={"photo": photo}, timeout=12)
@@ -771,15 +1159,16 @@ class EtholBot:
                             return data['result'].get('message_id')
             except Exception as e:
                 logger.error(f"Gagal kirim banner Telegram: {e}")
-        return self.send_tg(caption)
+        return self.send_tg(caption, chat_id=target_chat)
 
-    def send_tg(self, text):
-        if not self.tg_token or not self.tg_chat_id:
+    def send_tg(self, text, chat_id=None):
+        target_chat = str(chat_id or self.tg_chat_id).strip()
+        if not self.tg_token or not target_chat:
             return None
         try:
             url = f"https://api.telegram.org/bot{self.tg_token}/sendMessage"
             r = requests.post(url, json={
-                "chat_id": self.tg_chat_id,
+                "chat_id": target_chat,
                 "text": text,
                 "parse_mode": "HTML"
             }, timeout=8)
@@ -788,36 +1177,37 @@ class EtholBot:
                 if data.get('ok'):
                     return data['result'].get('message_id')
         except Exception as e:
-            logger.error(f"Gagal kirim Telegram: {e}")
+            logger.error(f"Gagal kirim Telegram ke {target_chat}: {e}")
         return None
 
-    def delete_tg_message(self, message_id):
-        if not self.tg_token or not self.tg_chat_id or not message_id:
+    def delete_tg_message(self, message_id, chat_id=None):
+        target_chat = str(chat_id or self.tg_chat_id).strip()
+        if not self.tg_token or not target_chat or not message_id:
             return
         try:
             url = f"https://api.telegram.org/bot{self.tg_token}/deleteMessage"
             requests.post(url, json={
-                "chat_id": self.tg_chat_id,
+                "chat_id": target_chat,
                 "message_id": message_id
             }, timeout=5)
         except Exception:
             pass
 
-    def delete_tg_messages(self, message_ids):
+    def delete_tg_messages(self, message_ids, chat_id=None):
         if not message_ids:
             return
         for mid in message_ids:
             if mid:
-                self.delete_tg_message(mid)
+                self.delete_tg_message(mid, chat_id=chat_id)
 
-    def start_loading_bar(self, text="Memuat data..."):
-        """Mengirim pesan loading bar 50% di bagian paling bawah agar riwayat chat tidak pernah kosong (0 pesan)."""
-        if not self.tg_token or not self.tg_chat_id:
+    def start_loading_bar(self, text="Memproses...", chat_id=None):
+        target_chat = str(chat_id or self.tg_chat_id).strip()
+        if not self.tg_token or not target_chat:
             return None
         try:
             url = f"https://api.telegram.org/bot{self.tg_token}/sendMessage"
             payload = {
-                "chat_id": self.tg_chat_id,
+                "chat_id": target_chat,
                 "text": f"⏳ <b>{html.escape(text)}</b>\n<code>[▰▰▰▰▰▱▱▱▱▱] 50%</code>",
                 "parse_mode": "HTML"
             }
@@ -828,14 +1218,14 @@ class EtholBot:
             logger.debug(f"Gagal kirim loading bar: {e}")
         return None
 
-    def advance_loading_bar(self, loading_id, text="Menyiapkan tampilan..."):
-        """Mengupdate loading bar menjadi 100% saat data siap."""
-        if not self.tg_token or not self.tg_chat_id or not loading_id:
+    def advance_loading_bar(self, loading_id, text="Menyiapkan data...", chat_id=None):
+        target_chat = str(chat_id or self.tg_chat_id).strip()
+        if not self.tg_token or not target_chat or not loading_id:
             return
         try:
             url = f"https://api.telegram.org/bot{self.tg_token}/editMessageText"
             payload = {
-                "chat_id": self.tg_chat_id,
+                "chat_id": target_chat,
                 "message_id": loading_id,
                 "text": f"⚡ <b>{html.escape(text)}</b>\n<code>[▰▰▰▰▰▰▰▰▰▰] 100%</code>",
                 "parse_mode": "HTML"
@@ -844,23 +1234,25 @@ class EtholBot:
         except Exception:
             pass
 
-    def finish_loading_bar(self, loading_id):
-        """Menghapus pesan loading bar sementara setelah pesan target telah tampil di layar."""
-        if not self.tg_token or not self.tg_chat_id or not loading_id:
+    def finish_loading_bar(self, loading_id, chat_id=None):
+        target_chat = str(chat_id or self.tg_chat_id).strip()
+        if not self.tg_token or not target_chat or not loading_id:
             return
         try:
             url = f"https://api.telegram.org/bot{self.tg_token}/deleteMessage"
-            payload = {"chat_id": self.tg_chat_id, "message_id": loading_id}
+            payload = {"chat_id": target_chat, "message_id": loading_id}
             requests.post(url, json=payload, timeout=5)
         except Exception:
             pass
 
-    def get_status_box(self):
+    def get_status_box(self, student_acc=None):
         now_wib = get_wib_now()
         now_time_str = now_wib.strftime("%H:%M")
         time_val = now_wib.hour + now_wib.minute / 60.0
 
-        if not self.user_info:
+        user_info = student_acc.user_info if student_acc else self.user_info
+
+        if not user_info:
             return (
                 "<code>┌─ STATUS ────────────\n"
                 "│ 🔴 Server Terputus\n"
@@ -907,29 +1299,49 @@ class EtholBot:
             "└─────────────────────</code>"
         )
 
-    def format_menu_text(self):
-        status_box = self.get_status_box()
+    def format_menu_text(self, student_acc=None, is_admin=False):
+        status_box = self.get_status_box(student_acc)
         credit = "\n\n✦ <b>Creator : Gungna</b>"
-        return (
-            "<b>KON-THOL ASSISTANT</b>\n"
-            "<i>Kawan Otomasi dan Notifikasi E-THOL</i>\n\n"
-            f"{status_box}\n\n"
-            "<b>PANDUAN PERINTAH:</b>\n"
-            "⚡ /scan atau /absen - Scan presensi seketika\n"
-            "👥 /accounts - Daftar akun multi-mahasiswa\n"
-            "➕ /addaccount - Tambah akun baru\n"
-            "➖ /delaccount - Hapus akun terdaftar\n"
-            "⚡ /scanall - Scan serentak semua akun\n"
-            "📅 /jadwal - Jadwal perkuliahan mingguan\n"
-            "📊 /rekap - Rekapitulasi kehadiran semester\n"
-            "📝 /tugas - Daftar tugas pending & tautan\n"
-            "📜 /log - Riwayat catatan log aktivitas\n"
-            "ℹ️ /status - Status bot & sesi login SSO\n"
-            "💤 /cooldown - Istirahatkan scanner hari ini\n"
-            "⚡ /resume - Batalkan cooldown & kembali siaga\n"
-            "🔄 /relogin - Sinkronisasi ulang sesi SSO PENS"
-            + credit
-        )
+        mhs_name = student_acc.name if student_acc else "Mahasiswa"
+        nrp_str = f" ({student_acc.user_info.get('nipnrp')})" if student_acc and student_acc.user_info and student_acc.user_info.get('nipnrp') else ""
+
+        if is_admin:
+            return (
+                f"<b>KON-THOL ASSISTANT — ADMIN PANEL</b>\n"
+                f"<i>Akun Anda: {mhs_name}{nrp_str}</i>\n\n"
+                f"{status_box}\n\n"
+                "<b>PANDUAN PERINTAH MAHASISWA:</b>\n"
+                "⚡ /scan atau /absen - Scan presensi seketika\n"
+                "📅 /jadwal - Jadwal perkuliahan mingguan\n"
+                "📊 /rekap - Rekapitulasi kehadiran semester\n"
+                "📝 /tugas - Daftar tugas pending & tautan\n"
+                "ℹ️ /status - Status bot & sesi login SSO\n"
+                "🔄 /relogin - Sinkronisasi ulang sesi SSO PENS\n\n"
+                "<b>PANDUAN KONTROL & MULTI-AKUN (ADMIN):</b>\n"
+                "👥 /accounts - Daftar akun mahasiswa & status Telegram\n"
+                "➕ /addaccount - Tambah akun mahasiswa baru\n"
+                "🔗 /settelegram - Tautkan Telegram ID ke akun\n"
+                "➖ /delaccount - Hapus akun terdaftar\n"
+                "⚡ /scanall - Scan serentak semua akun\n"
+                "📜 /log - Riwayat catatan log aktivitas\n"
+                "💤 /cooldown - Istirahatkan scanner hari ini\n"
+                "⚡ /resume - Batalkan cooldown & kembali siaga"
+                + credit
+            )
+        else:
+            return (
+                f"<b>KON-THOL ASSISTANT</b>\n"
+                f"<i>Akun Anda: {mhs_name}{nrp_str}</i>\n\n"
+                f"{status_box}\n\n"
+                "<b>PANDUAN PERINTAH:</b>\n"
+                "⚡ /scan atau /absen - Scan presensi perkuliahan Anda\n"
+                "📅 /jadwal - Jadwal perkuliahan mingguan Anda\n"
+                "📊 /rekap - Rekapitulasi kehadiran resmi semester\n"
+                "📝 /tugas - Daftar tugas pending & tautan pengumpulan\n"
+                "ℹ️ /status - Status akun & sesi login SSO PENS\n"
+                "🔄 /relogin - Sinkronisasi ulang sesi SSO Anda"
+                + credit
+            )
 
     def edit_tg_caption(self, message_id, caption):
         if not self.tg_token or not self.tg_chat_id or not message_id:
@@ -962,17 +1374,12 @@ class EtholBot:
             return False
 
     def update_telegram_menu_ui(self):
-        if not self.tg_token or not self.tg_chat_id:
-            return
-        menu_text = self.format_menu_text()
-        if self.main_menu_msg_id:
-            succ = self.edit_tg_caption(self.main_menu_msg_id, menu_text)
-            if not succ:
-                succ = self.edit_tg_text(self.main_menu_msg_id, menu_text)
-            if not succ:
-                self.main_menu_msg_id = self.send_tg_photo(menu_text)
-        else:
-            self.main_menu_msg_id = self.send_tg_photo(menu_text)
+        admin_chat = self.tg_chat_id
+        menu_id = self.chat_main_menu.get(admin_chat)
+        if menu_id and self.tg_token:
+            acc = self.get_account_by_chat_id(admin_chat)
+            menu_text = self.format_menu_text(student_acc=acc, is_admin=True)
+            self.send_tg_photo(menu_text, chat_id=admin_chat)
 
     def determine_mode(self, now_wib=None):
         if not now_wib:
@@ -1616,157 +2023,289 @@ class EtholBot:
         except Exception as e:
             return f"Gagal membaca file log: {e}"
 
-    def handle_tg_command(self, cmd, user_msg_id=None):
+    def handle_tg_command(self, cmd, user_msg_id=None, chat_id=None):
+        target_chat_id = str(chat_id or self.tg_chat_id).strip()
         c = cmd.lower().strip()
-        logger.info(f"Menerima perintah Telegram: {cmd}")
+        logger.info(f"Menerima perintah Telegram dari [{target_chat_id}]: {cmd}")
         credit = "\n\n✦ <b>Creator : Gungna</b>"
 
-        # Kirim loading bar terlebih dahulu di bagian paling bawah agar riwayat chat tidak pernah 0 pesan
-        loading_id = self.start_loading_bar("Memproses perintah...")
+        is_admin = self.is_admin(target_chat_id)
+        current_acc = self.get_account_by_chat_id(target_chat_id)
 
-        # Hapus pesan-pesan interaksi perantara sebelumnya di atas loading bar
-        self.delete_tg_messages(self.last_interaction_msg_ids)
-        self.last_interaction_msg_ids = []
+        if target_chat_id not in self.chat_last_interaction:
+            self.chat_last_interaction[target_chat_id] = []
 
-        if c in ['/start', '/help', 'help', '/menu']:
-            # Jika user panggil /start baru, bersihkan banner menu utama lama & pesan input user
-            if self.main_menu_msg_id:
-                self.delete_tg_message(self.main_menu_msg_id)
-                self.main_menu_msg_id = None
-            if user_msg_id:
-                self.delete_tg_message(user_msg_id)
+        # Kirim loading bar di chat pemanggil
+        loading_id = self.start_loading_bar("Memproses perintah...", chat_id=target_chat_id)
 
-            if loading_id:
-                self.advance_loading_bar(loading_id, "Menyiapkan menu utama...")
+        # Hapus pesan interaksi sebelumnya khusus chat ini
+        self.delete_tg_messages(self.chat_last_interaction[target_chat_id], chat_id=target_chat_id)
+        self.chat_last_interaction[target_chat_id] = []
 
-            menu_text = self.format_menu_text()
-            self.main_menu_msg_id = self.send_tg_photo(menu_text)
-            self.current_mode = self.determine_mode()
-
-            if loading_id:
-                self.finish_loading_bar(loading_id)
-            return
-
-        # Untuk slash command aktif (terakhir), catat input user dan hasil jawaban
         current_batch = []
         if user_msg_id:
             current_batch.append(user_msg_id)
 
-        if loading_id:
-            self.advance_loading_bar(loading_id, "Mengambil data...")
-
-        if cmd.startswith('/addaccount') or cmd.startswith('/addakun'):
-            if user_msg_id:
-                self.delete_tg_message(user_msg_id)
-
-            raw_args = cmd[len(cmd.split()[0]):].strip()
-            if '|' in raw_args:
-                parts = [p.strip() for p in raw_args.split('|') if p.strip()]
-            else:
-                parts = raw_args.split()
-
-            if len(parts) < 3:
-                res_id = self.send_tg(
-                    "⚠️ <b>Format Perintah /addaccount:</b>\n"
-                    "<code>/addaccount Nama Mahasiswa | email@student.pens.ac.id | password [| no_wa]</code>\n\n"
-                    "<i>Contoh:</i>\n"
-                    "<code>/addaccount Nazriel | nazriel@student.pens.ac.id | Rahasia123 | 08123456789</code>"
-                    + credit
-                )
-                if res_id: current_batch.append(res_id)
-            else:
-                name = parts[0]
-                user_acc = parts[1]
-                pass_acc = parts[2]
-                wa = parts[3] if len(parts) > 3 else ""
-
-                if loading_id:
-                    self.advance_loading_bar(loading_id, "Memvalidasi kredensial ke SSO PENS...")
-
-                succ, info = self.add_account(name, user_acc, pass_acc, wa_target=wa)
-                if succ:
+        # Skenario 1: User belum terhubung / belum punya akun terikat di KON-THOL
+        if not current_acc and not is_admin:
+            if cmd.startswith('/bind'):
+                parts = cmd[len('/bind'):].strip().split()
+                if len(parts) < 2:
                     res_id = self.send_tg(
-                        f"✅ <b>AKUN BERHASIL DITAMBAHKAN</b>\n\n"
-                        f"{info}\n"
-                        f"Akun ini sekarang otomatis dipantau oleh KON-THOL Multi-Account!"
-                        + credit
+                        "⚠️ <b>Format Perintah /bind:</b>\n"
+                        "<code>/bind email@student.pens.ac.id password</code>\n\n"
+                        "<i>Contoh:</i>\n"
+                        "<code>/bind nazriel@student.pens.ac.id Rahasia123</code>"
+                        + credit,
+                        chat_id=target_chat_id
                     )
+                    if res_id: current_batch.append(res_id)
                 else:
-                    res_id = self.send_tg(
-                        f"❌ <b>GAGAL MENAMBAHKAN AKUN</b>\n\n"
-                        f"{info}"
-                        + credit
-                    )
-                if res_id: current_batch.append(res_id)
+                    email_in = parts[0]
+                    pass_in = parts[1]
+                    if loading_id:
+                        self.advance_loading_bar(loading_id, "Memvalidasi kredensial SSO PENS...", chat_id=target_chat_id)
+                    succ, acc_res = self.bind_telegram_account(target_chat_id, email_in, pass_in)
+                    if succ:
+                        m_nama = acc_res.user_info.get('nama', acc_res.name) if acc_res.user_info else acc_res.name
+                        nrp = acc_res.user_info.get('nipnrp', '') if acc_res.user_info else ''
+                        res_id = self.send_tg(
+                            "🎉 <b>AKUN TELEGRAM BERHASIL DITAUTKAN!</b>\n\n"
+                            f"👤 <b>Mahasiswa:</b> {m_nama}\n"
+                            f"🆔 <b>NRP:</b> <code>{nrp}</code>\n"
+                            f"💬 <b>Telegram ID:</b> <code>{target_chat_id}</code>\n\n"
+                            "Sekarang Anda dapat menggunakan bot ini secara mandiri!\n"
+                            "Ketik /menu untuk membuka panduan layanan."
+                            + credit,
+                            chat_id=target_chat_id
+                        )
+                    else:
+                        res_id = self.send_tg(
+                            "❌ <b>GAGAL MENAUTKAN AKUN</b>\n\n"
+                            f"Keterangan: {acc_res}\n\n"
+                            "Pastikan email dan password SSO PENS Anda sudah benar."
+                            + credit,
+                            chat_id=target_chat_id
+                        )
+                    if res_id: current_batch.append(res_id)
 
-        elif cmd.startswith('/delaccount') or cmd.startswith('/delakun'):
-            parts = cmd.split(maxsplit=1)
-            if len(parts) < 2:
+                self.chat_last_interaction[target_chat_id] = current_batch
+                if loading_id:
+                    self.finish_loading_bar(loading_id, chat_id=target_chat_id)
+                return
+
+            else:
+                # User asing / belum tertaut mengirim perintah lain atau /start
                 res_id = self.send_tg(
-                    "⚠️ <b>Format Perintah /delaccount:</b>\n"
-                    "<code>/delaccount email@student.pens.ac.id</code> atau nomor urut (contoh: <code>/delaccount 2</code>)"
-                    + credit
+                    "👋 <b>Halo! Selamat datang di KON-THOL Assistant.</b>\n\n"
+                    f"Akun Telegram Anda (ID: <code>{target_chat_id}</code>) belum ditautkan ke akun mahasiswa ETHOL manapun.\n\n"
+                    "<b>Cara Menautkan Akun Anda:</b>\n"
+                    "Ketik perintah:\n"
+                    "<code>/bind email@student.pens.ac.id password</code>\n\n"
+                    "<i>Setelah ditautkan, Anda dapat mengecek jadwal, rekap presensi, tugas, dan melakukan presensi mandiri dari Telegram Anda!</i>"
+                    + credit,
+                    chat_id=target_chat_id
                 )
                 if res_id: current_batch.append(res_id)
-            else:
-                target = parts[1].strip()
-                succ, msg = self.del_account(target)
-                icon = "✅" if succ else "❌"
-                res_id = self.send_tg(f"{icon} {msg}{credit}")
-                if res_id: current_batch.append(res_id)
+                self.chat_last_interaction[target_chat_id] = current_batch
+                if loading_id:
+                    self.finish_loading_bar(loading_id, chat_id=target_chat_id)
+                return
 
-        elif c in ['/accounts', '/multi', '/daftarakun', 'accounts', 'multi']:
-            res_id = self.send_tg(f"{self.format_accounts_list()}{credit}")
+        # Skenario 2: User terdaftar (atau Admin)
+        if c in ['/start', '/help', 'help', '/menu']:
+            old_menu_id = self.chat_main_menu.get(target_chat_id)
+            if old_menu_id:
+                self.delete_tg_message(old_menu_id, chat_id=target_chat_id)
+                self.chat_main_menu[target_chat_id] = None
+            if user_msg_id:
+                self.delete_tg_message(user_msg_id, chat_id=target_chat_id)
+
+            if loading_id:
+                self.advance_loading_bar(loading_id, "Menyiapkan menu...", chat_id=target_chat_id)
+
+            menu_text = self.format_menu_text(student_acc=current_acc, is_admin=is_admin)
+            new_menu_id = self.send_tg_photo(menu_text, chat_id=target_chat_id)
+            self.chat_main_menu[target_chat_id] = new_menu_id
+
+            if loading_id:
+                self.finish_loading_bar(loading_id, chat_id=target_chat_id)
+            return
+
+        if loading_id:
+            self.advance_loading_bar(loading_id, "Mengambil data...", chat_id=target_chat_id)
+
+        # Perintah Mahasiswa:
+        if c in ['/jadwal', '/matkul', 'jadwal']:
+            jadwal_txt = current_acc.format_jadwal_text() if current_acc else self.format_jadwal_text()
+            res_id = self.send_tg(f"{jadwal_txt}{credit}", chat_id=target_chat_id)
             if res_id: current_batch.append(res_id)
 
-        elif c in ['/scanall', 'scanall']:
-            res = self.scan_and_attend(manual=True)
-            res_id = self.send_tg(f"{res}{credit}")
+        elif c in ['/rekap', 'rekap']:
+            rekap_txt = current_acc.format_rekap_detail() if current_acc else self.format_rekap_detail()
+            res_id = self.send_tg(f"{rekap_txt}{credit}", chat_id=target_chat_id)
+            if res_id: current_batch.append(res_id)
+
+        elif c in ['/tugas', 'tugas']:
+            tugas_txt = current_acc.format_tugas_text() if current_acc else self.format_tugas_text()
+            res_id = self.send_tg(f"{tugas_txt}{credit}", chat_id=target_chat_id)
+            if res_id: current_batch.append(res_id)
+
+        elif c in ['/status', 'status']:
+            status_txt = current_acc.format_status_text(self) if current_acc else self.format_status_text()
+            res_id = self.send_tg(f"{status_txt}{credit}", chat_id=target_chat_id)
             if res_id: current_batch.append(res_id)
 
         elif c in ['/scan', '/absen', 'scan', 'absen']:
-            res = self.scan_and_attend(manual=True)
-            res_id = self.send_tg(f"{res}{credit}")
-            if res_id:
-                current_batch.append(res_id)
-        elif c in ['/jadwal', '/matkul', 'jadwal']:
-            res_id = self.send_tg(f"{self.format_jadwal_text()}{credit}")
-            if res_id: current_batch.append(res_id)
-        elif c in ['/rekap', 'rekap']:
-            res_id = self.send_tg(f"{self.format_rekap_detail()}{credit}")
-            if res_id: current_batch.append(res_id)
-        elif c in ['/tugas', 'tugas']:
-            res_id = self.send_tg(f"{self.format_tugas_text()}{credit}")
-            if res_id: current_batch.append(res_id)
-        elif c in ['/log', '/logs', 'log']:
-            res_id = self.send_tg(f"{self.get_raw_logs(15)}{credit}")
-            if res_id: current_batch.append(res_id)
-        elif c in ['/status', 'status']:
-            res_id = self.send_tg(f"{self.format_status_text()}{credit}")
-            if res_id: current_batch.append(res_id)
-        elif c in ['/cooldown', 'cooldown']:
-            _, msg = self.activate_cooldown()
-            res_id = self.send_tg(f"💤 {msg}{credit}")
-            if res_id: current_batch.append(res_id)
-        elif c in ['/resume', '/siaga', 'resume', 'siaga']:
-            _, msg = self.deactivate_cooldown()
-            res_id = self.send_tg(f"⚡ {msg}{credit}")
-            if res_id: current_batch.append(res_id)
-        elif c in ['/relogin', 'relogin']:
-            if self.login_cas(notify_on_fail=False):
-                res_id = self.send_tg(f"✅ Berhasil login ulang ke SSO PENS!{credit}")
+            if current_acc:
+                res = current_acc.scan_and_attend(notify_callback=self.notify_attendance, manual=True)
             else:
-                res_id = self.send_tg(f"❌ Gagal login ulang ke SSO PENS.{credit}")
-            if res_id:
-                current_batch.append(res_id)
-        else:
-            res_id = self.send_tg(f"Perintah tidak dikenal: <code>{html.escape(cmd)}</code>. Ketik /help untuk panduan.{credit}")
+                res = self.scan_and_attend(manual=True)
+            res_id = self.send_tg(f"{res}{credit}", chat_id=target_chat_id)
             if res_id: current_batch.append(res_id)
 
-        self.last_interaction_msg_ids = current_batch
+        elif c in ['/relogin', 'relogin']:
+            target_obj = current_acc if current_acc else self
+            if target_obj.login_cas(notify_on_fail=False):
+                res_id = self.send_tg(f"✅ Berhasil login ulang ke SSO PENS untuk {target_obj.name}!{credit}", chat_id=target_chat_id)
+            else:
+                res_id = self.send_tg(f"❌ Gagal login ulang ke SSO PENS untuk {target_obj.name}.{credit}", chat_id=target_chat_id)
+            if res_id: current_batch.append(res_id)
 
+        # Perintah Admin:
+        elif cmd.startswith('/addaccount') or cmd.startswith('/addakun'):
+            if not is_admin:
+                res_id = self.send_tg(f"🔒 <i>Perintah /addaccount dibatasi hanya untuk Administrator.</i>{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+            else:
+                raw_args = cmd[len(cmd.split()[0]):].strip()
+                parts = [p.strip() for p in raw_args.split('|') if p.strip()] if '|' in raw_args else raw_args.split()
+                if len(parts) < 3:
+                    res_id = self.send_tg(
+                        "⚠️ <b>Format Perintah /addaccount:</b>\n"
+                        "<code>/addaccount Nama Mahasiswa | email@student.pens.ac.id | password [| telegram_chat_id]</code>\n\n"
+                        "<i>Contoh:</i>\n"
+                        "<code>/addaccount Nazriel | nazriel@student.pens.ac.id | Rahasia123 | 1234567890</code>"
+                        + credit,
+                        chat_id=target_chat_id
+                    )
+                    if res_id: current_batch.append(res_id)
+                else:
+                    name = parts[0]
+                    user_acc = parts[1]
+                    pass_acc = parts[2]
+                    tg_id = parts[3] if len(parts) > 3 else ""
+                    if loading_id:
+                        self.advance_loading_bar(loading_id, "Memvalidasi kredensial ke SSO PENS...", chat_id=target_chat_id)
+                    succ, info = self.add_account(name, user_acc, pass_acc, tg_id=tg_id)
+                    if succ:
+                        res_id = self.send_tg(
+                            f"✅ <b>AKUN BERHASIL DITAMBAHKAN</b>\n\n"
+                            f"{info}\n"
+                            f"Telegram ID: <code>{tg_id or 'Belum diatur (bisa pakai /settelegram atau /bind)'}</code>\n"
+                            f"Akun ini sekarang otomatis dipantau oleh KON-THOL Multi-Account!"
+                            + credit,
+                            chat_id=target_chat_id
+                        )
+                    else:
+                        res_id = self.send_tg(f"❌ <b>GAGAL MENAMBAHKAN AKUN</b>\n\n{info}{credit}", chat_id=target_chat_id)
+                    if res_id: current_batch.append(res_id)
+
+        elif cmd.startswith('/settelegram') or cmd.startswith('/settg'):
+            if not is_admin:
+                res_id = self.send_tg(f"🔒 <i>Perintah ini dibatasi hanya untuk Administrator.</i>{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+            else:
+                parts = cmd.split(maxsplit=2)
+                if len(parts) < 3:
+                    res_id = self.send_tg(
+                        "⚠️ <b>Format Perintah /settelegram:</b>\n"
+                        "<code>/settelegram email_atau_nomor telegram_chat_id</code>\n\n"
+                        "<i>Contoh:</i>\n"
+                        "<code>/settelegram 2 1234567890</code>"
+                        + credit,
+                        chat_id=target_chat_id
+                    )
+                    if res_id: current_batch.append(res_id)
+                else:
+                    target_val = parts[1].strip()
+                    tg_id_val = parts[2].strip()
+                    succ, msg = self.set_telegram_id(target_val, tg_id_val)
+                    icon = "✅" if succ else "❌"
+                    res_id = self.send_tg(f"{icon} {msg}{credit}", chat_id=target_chat_id)
+                    if res_id: current_batch.append(res_id)
+
+        elif cmd.startswith('/delaccount') or cmd.startswith('/delakun'):
+            if not is_admin:
+                res_id = self.send_tg(f"🔒 <i>Perintah /delaccount dibatasi hanya untuk Administrator.</i>{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+            else:
+                parts = cmd.split(maxsplit=1)
+                if len(parts) < 2:
+                    res_id = self.send_tg(
+                        "⚠️ <b>Format Perintah /delaccount:</b>\n"
+                        "<code>/delaccount email@student.pens.ac.id</code> atau nomor urut"
+                        + credit,
+                        chat_id=target_chat_id
+                    )
+                    if res_id: current_batch.append(res_id)
+                else:
+                    target = parts[1].strip()
+                    succ, msg = self.del_account(target)
+                    icon = "✅" if succ else "❌"
+                    res_id = self.send_tg(f"{icon} {msg}{credit}", chat_id=target_chat_id)
+                    if res_id: current_batch.append(res_id)
+
+        elif c in ['/accounts', '/multi', '/daftarakun', 'accounts', 'multi']:
+            if not is_admin:
+                res_id = self.send_tg(f"🔒 <i>Daftar akun lengkap hanya dapat dilihat oleh Administrator.</i>{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+            else:
+                res_id = self.send_tg(f"{self.format_accounts_list()}{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+
+        elif c in ['/scanall', 'scanall']:
+            if not is_admin:
+                res_id = self.send_tg(f"🔒 <i>Scan seluruh akun serentak hanya dapat dipicu oleh Administrator.</i>{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+            else:
+                res = self.scan_and_attend(manual=True)
+                res_id = self.send_tg(f"{res}{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+
+        elif c in ['/cooldown', 'cooldown']:
+            if not is_admin:
+                res_id = self.send_tg(f"🔒 <i>Kontrol scanner dibatasi hanya untuk Administrator.</i>{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+            else:
+                _, msg = self.activate_cooldown()
+                res_id = self.send_tg(f"💤 {msg}{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+
+        elif c in ['/resume', '/siaga', 'resume', 'siaga']:
+            if not is_admin:
+                res_id = self.send_tg(f"🔒 <i>Kontrol scanner dibatasi hanya untuk Administrator.</i>{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+            else:
+                _, msg = self.deactivate_cooldown()
+                res_id = self.send_tg(f"⚡ {msg}{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+
+        elif c in ['/log', '/logs', 'log']:
+            if not is_admin:
+                res_id = self.send_tg(f"🔒 <i>Akses log sistem dibatasi hanya untuk Administrator.</i>{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+            else:
+                res_id = self.send_tg(f"{self.get_raw_logs(15)}{credit}", chat_id=target_chat_id)
+                if res_id: current_batch.append(res_id)
+
+        else:
+            res_id = self.send_tg(f"Perintah tidak dikenal: <code>{html.escape(cmd)}</code>. Ketik /help untuk panduan.{credit}", chat_id=target_chat_id)
+            if res_id: current_batch.append(res_id)
+
+        self.chat_last_interaction[target_chat_id] = current_batch
         if loading_id:
-            self.finish_loading_bar(loading_id)
+            self.finish_loading_bar(loading_id, chat_id=target_chat_id)
 
     def run_auto_loop(self, interval=120):
         logger.info(f"Scanner background aktif (interval {interval}s)...")
@@ -1827,7 +2366,7 @@ class EtholBot:
     def run_tg_listener(self):
         if not self.tg_token:
             return
-        logger.info("Telegram Bot Listener aktif...")
+        logger.info("Telegram Bot Listener aktif (Multi-User Mandiri)...")
         offset = 0
         while True:
             try:
@@ -1842,11 +2381,11 @@ class EtholBot:
                         text = msg.get('text', '').strip()
                         msg_id = msg.get('message_id')
 
-                        if self.tg_chat_id and chat_id != self.tg_chat_id:
+                        if not chat_id:
                             continue
 
                         if text.startswith('/'):
-                            self.handle_tg_command(text, user_msg_id=msg_id)
+                            self.handle_tg_command(text, user_msg_id=msg_id, chat_id=chat_id)
             except Exception:
                 time.sleep(3)
 

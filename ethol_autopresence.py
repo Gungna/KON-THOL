@@ -1081,21 +1081,23 @@ class EtholBot:
             if not accs:
                 return False, "Tidak ada akun terdaftar dalam accounts.json."
 
+            target_str = str(target).strip()
             removed_name = None
-            if target.isdigit():
-                idx = int(target) - 1
+            if target_str.isdigit() and int(target_str) <= len(accs):
+                idx = int(target_str) - 1
                 if 0 <= idx < len(accs):
                     removed_name = accs[idx].get("name")
                     del accs[idx]
-            else:
+
+            if not removed_name:
                 for idx, a in enumerate(accs):
-                    if a.get("username", "").lower() == target.lower():
+                    if a.get("username", "").lower() == target_str.lower() or str(a.get("telegram_chat_id", "")) == target_str:
                         removed_name = a.get("name")
                         del accs[idx]
                         break
 
             if not removed_name:
-                return False, f"Akun '{target}' tidak ditemukan."
+                return False, f"Akun dengan email, urutan, atau Telegram ID '{target_str}' tidak ditemukan."
 
             data["accounts"] = accs
             with open(acc_file, "w", encoding="utf-8") as f:
@@ -1306,26 +1308,26 @@ class EtholBot:
         nrp_str = f" ({student_acc.user_info.get('nipnrp')})" if student_acc and student_acc.user_info and student_acc.user_info.get('nipnrp') else ""
 
         if is_admin:
+            multi_note = f"\n👥 <i>Mode Master Agregasi Aktif: {len(self.accounts)} Mahasiswa Terdaftar</i>" if len(self.accounts) > 1 else ""
             return (
-                f"<b>KON-THOL ASSISTANT — ADMIN PANEL</b>\n"
-                f"<i>Akun Anda: {mhs_name}{nrp_str}</i>\n\n"
+                f"👑 <b>KON-THOL ASSISTANT — MASTER ADMIN CONTROL</b>\n"
+                f"<i>Akun Utama: {mhs_name}{nrp_str}</i>{multi_note}\n\n"
                 f"{status_box}\n\n"
-                "<b>PANDUAN PERINTAH MAHASISWA:</b>\n"
-                "⚡ /scan atau /absen - Scan presensi seketika\n"
-                "📅 /jadwal - Jadwal perkuliahan mingguan\n"
-                "📊 /rekap - Rekapitulasi kehadiran semester\n"
-                "📝 /tugas - Daftar tugas pending & tautan\n"
-                "ℹ️ /status - Status bot & sesi login SSO\n"
-                "🔄 /relogin - Sinkronisasi ulang sesi SSO PENS\n\n"
-                "<b>PANDUAN KONTROL & MULTI-AKUN (ADMIN):</b>\n"
-                "👥 /accounts - Daftar akun mahasiswa & status Telegram\n"
-                "➕ /addaccount - Tambah akun mahasiswa baru\n"
-                "🔗 /settelegram - Tautkan Telegram ID ke akun\n"
-                "➖ /delaccount - Hapus akun terdaftar\n"
-                "⚡ /scanall - Scan serentak semua akun\n"
-                "📜 /log - Riwayat catatan log aktivitas\n"
-                "💤 /cooldown - Istirahatkan scanner hari ini\n"
-                "⚡ /resume - Batalkan cooldown & kembali siaga"
+                "<b>PANDUAN MASTER DASHBOARD (ADMIN):</b>\n"
+                "📊 /rekap [all | 1..N] - Rekapitulasi agregat / per mahasiswa\n"
+                "📅 /jadwal [all | 1..N] - Agenda hari ini agregat / per mahasiswa\n"
+                "📝 /tugas [all | 1..N] - Rekap tugas pending multi-mahasiswa\n"
+                "ℹ️ /status - Dashboard operasional & sesi multi-akun\n"
+                "⚡ /scanall - Scan serentak seluruh mahasiswa\n"
+                "⚡ /scan [1..N] - Scan presensi akun aktif / target\n"
+                "🔄 /relogin - Sinkronisasi sesi SSO PENS\n\n"
+                "<b>PANDUAN KONTROL SISTEM & AKUN:</b>\n"
+                "👥 /accounts - Daftar status akun & Telegram ID\n"
+                "➕ /addaccount - Tambah mahasiswa baru\n"
+                "🔗 /settelegram - Tautkan ID Telegram mahasiswa\n"
+                "➖ /delaccount - Hapus akun (berdasarkan email / urutan)\n"
+                "💤 /cooldown & ⚡ /resume - Kontrol jadwal scanner\n"
+                "📜 /log - Riwayat catatan log aktivitas"
                 + credit
             )
         else:
@@ -1812,202 +1814,197 @@ class EtholBot:
                 pass
         return pending
 
-    def format_status_text(self):
-        nama = self.user_info.get('nama', 'N/A') if self.user_info else 'Belum login'
-        nrp = self.user_info.get('nipnrp', 'N/A') if self.user_info else '-'
-        now_str = get_wib_str()
+    def format_status_text(self, student_acc=None, is_admin=False):
+        # Jika dipanggil untuk akun spesifik (member), tampilkan status personal
+        if student_acc and not is_admin:
+            return student_acc.format_status_text(self)
 
-        now_wib = get_wib_now()
-        time_val = now_wib.hour + now_wib.minute / 60.0
+        # Untuk Admin: Jika ada 2+ akun, sajikan Master Operational Dashboard
+        if is_admin and len(self.accounts) > 1:
+            now_str = get_wib_str()
+            txt = (
+                "👑 <b>DASHBOARD MONITORING MULTI-MAHASISWA</b>\n"
+                f"<i>Total Terdaftar: {len(self.accounts)} Akun Mahasiswa Aktif</i>\n\n"
+            )
+            for idx, acc in enumerate(self.accounts, 1):
+                nrp = acc.user_info.get('nipnrp', 'N/A') if acc.user_info else '-'
+                nama = acc.user_info.get('nama', acc.name) if acc.user_info else acc.name
+                sso_stat = "🟢 Terhubung" if acc.user_info else "🔴 Terputus (/relogin)"
+                tg_stat = f"🟢 <code>{acc.telegram_chat_id}</code>" if acc.telegram_chat_id else "⚪ Belum Ditautkan"
+                tag = " (Admin)" if idx == 1 else ""
 
-        if self.is_cooldown_active_today():
-            scanner_status = f"🟡 Cooldown ({self.cooldown_date})"
-            scanner_sub = "💤 Jeda s/d 00:00 WIB"
-            jadwal_relogin = "Auto re-login esok hari (00:00 WIB)"
-            aktivitas = "Istirahat (monitoring jeda)"
-        elif self.force_siaga:
-            scanner_status = "🟢 Siaga Penuh (Override Manual)"
-            scanner_sub = "• Memantau aktif (Istirahat Malam di-bypass)"
-            jadwal_relogin = "Pengecekan sesi berkala"
-            aktivitas = "Siaga penuh memantau presensi malam"
-        elif time_val >= 21.5 or time_val < 4.0:
-            scanner_status = "💤 Istirahat Malam"
-            scanner_sub = "• Jeda malam (dosen offline)"
-            jadwal_relogin = "Siaga subuh (04:00 WIB)"
-            aktivitas = "Standby malam (gunakan /resume jika ada kuliah)"
-        elif 4.0 <= time_val < 6.5:
-            scanner_status = "🌅 Siaga Subuh"
-            scanner_sub = "• Memantau persiapan kuliah pagi"
-            jadwal_relogin = "Pengecekan sesi berkala"
-            aktivitas = "Siaga subuh menyambut jadwal kuliah"
-        else:
-            scanner_status = "🟢 Siaga Penuh"
-            scanner_sub = "• Standby memantau presensi"
-            jadwal_relogin = "Pengecekan sesi berkala"
-            aktivitas = "Siaga memantau presensi & jadwal"
+                txt += (
+                    f"<b>[{idx}] {nama}</b>{tag}\n"
+                    f"    • NRP      : <code>{nrp}</code>\n"
+                    f"    • Sesi SSO : {sso_stat}\n"
+                    f"    • Telegram : {tg_stat}\n"
+                    f"    • Auth     : <code>{acc.last_auth_time}</code>\n\n"
+                )
+            txt += (
+                "<b>⚙️ STATUS SCANNER SISTEM:</b>\n"
+                f"• Mode Operasional : <b>{self.determine_mode()}</b>\n"
+                f"• Terakhir Scan    : <code>{self.last_scan_time}</code>\n"
+                f"• Waktu Server     : <code>{now_str}</code>"
+            )
+            return txt
 
-        return (
-            "<b>┌─ DATA MAHASISWA ─────────────────</b>\n"
-            f"│ Mahasiswa      : {nama}\n"
-            f"│ NRP            : <code>{nrp}</code>\n"
-            f"│ Waktu Server   : {now_str}\n"
-            "<b>├─ SESI LOGIN & RE-LOGIN ───────────</b>\n"
-            "│ Sesi Login     : 🟢 Terhubung (Aktif)\n"
-            f"│ Terakhir Login : <code>{self.last_auth_time}</code>\n"
-            f"│ Jadwal Re-login: {jadwal_relogin}\n"
-            "<b>├─ OPERASIONAL SCANNER ────────────</b>\n"
-            f"│ Status Scanner : {scanner_status}\n"
-            f"│                  {scanner_sub}\n"
-            f"│ Aktivitas      : {aktivitas}\n"
-            "<b>└──────────────────────────────────</b>"
-        )
+        # Fallback single account
+        if self.accounts:
+            return self.accounts[0].format_status_text(self)
+        return "Belum ada akun mahasiswa aktif."
 
-    def format_rekap_detail(self):
-        stats = self.get_attendance_statistics()
-        if not stats:
-            return "Gagal memuat rekapitulasi kehadiran dari server ETHOL."
+    def format_rekap_detail(self, student_acc=None, is_admin=False, target_arg=None):
+        if student_acc and not is_admin:
+            return student_acc.format_rekap_detail()
 
-        now_wib = get_wib_now()
-        today_idx = now_wib.weekday()
-        day_names = {0: "senin", 1: "selasa", 2: "rabu", 3: "kamis", 4: "jumat", 5: "sabtu", 6: "minggu"}
-        today_day_clean = day_names.get(today_idx, "")
+        # Admin: cek jika meminta mahasiswa spesifik (contoh: /rekap 2)
+        if is_admin and target_arg and str(target_arg).isdigit():
+            idx = int(target_arg) - 1
+            if 0 <= idx < len(self.accounts):
+                return self.accounts[idx].format_rekap_detail()
 
-        def clean_day(d):
-            return str(d or '').lower().replace("'", "").replace("`", "").strip()
-
-        courses_scheduled_today = set()
-        for item in self.schedule_cache:
-            if clean_day(item.get('hari')) == today_day_clean:
-                k_id = item.get('nomor') or item.get('kuliah')
-                mk_name = item.get('matakuliah')
-                if k_id: courses_scheduled_today.add(k_id)
-                if mk_name: courses_scheduled_today.add(str(mk_name))
-
-        txt = (
-            "<b>REKAPITULASI KEHADIRAN RESMI</b>\n\n"
-            f"• Rata-rata Total : <b>{stats['percentage']:.1f}%</b>\n"
-            f"• Total Kehadiran : {stats['total_mhs_semester']} dari {stats['total_dosen_semester']} sesi perkuliahan\n"
-            f"• Hadir Hari Ini  : {stats['total_mhs_today']} sesi tervalidasi hadir\n\n"
-            "<b>RINCIAN PER MATA KULIAH:</b>\n\n"
-        )
-
-        for item in stats['breakdown']:
-            mk_name = item['nama']
-            k_id = item.get('kuliah_id')
-            d_today = item.get('d_today', 0)
-            m_today = item.get('m_today', 0)
-            hadir_sem = item.get('hadir', 0)
-
-            is_today = (k_id in courses_scheduled_today or mk_name in courses_scheduled_today)
-
-            if is_today:
-                if m_today > 0:
-                    status_sesi = f"🟢 <code>[Sesi Selesai: Tervalidasi Hadir ({m_today} Sesi)]</code>"
-                elif d_today > 0:
-                    status_sesi = "⚠️ <code>[Sesi Terbuka: Belum Hadir]</code>"
+        # Admin Multi-Akun (≥ 2): Sajikan Rekapitulasi Agregat Komparatif
+        if is_admin and len(self.accounts) > 1:
+            txt = (
+                "📊 <b>REKAPITULASI KEHADIRAN MULTI-MAHASISWA</b>\n"
+                f"<i>Tinjauan Presensi Semester ({len(self.accounts)} Mahasiswa Terdaftar)</i>\n\n"
+                "🏆 <b>RINGKASAN TINGKAT KEHADIRAN:</b>\n"
+            )
+            all_stats = []
+            for idx, acc in enumerate(self.accounts, 1):
+                stats = acc.get_attendance_statistics()
+                all_stats.append((acc, stats))
+                m_name = acc.user_info.get('nama', acc.name) if acc.user_info else acc.name
+                if stats:
+                    pct = stats['percentage']
+                    hadir = stats['total_mhs_semester']
+                    total = stats['total_dosen_semester']
+                    h_today = stats['total_mhs_today']
+                    badge = "🟢" if pct >= 80 else "🟠" if pct >= 60 else "🔴"
+                    txt += f"{badge} <b>{idx}. {m_name}</b> : <b>{pct:.1f}%</b> ({hadir}/{total} sesi) • Hari ini: {h_today}\n"
                 else:
-                    status_sesi = "⚪ <code>[Belum Ada Sesi Dibuka Dosen]</code>"
+                    txt += f"⚪ <b>{idx}. {m_name}</b> : <i>Belum sinkron</i>\n"
 
-                txt += (
-                    f"• <b>{mk_name}</b> (Hari Ini)\n"
-                    f"  Status Sesi : {status_sesi}\n"
-                    f"  Total Hadir : {hadir_sem} kali pertemuan dalam semester ini.\n\n"
-                )
-            elif m_today > 0 or d_today > 0:
-                txt += (
-                    f"• <b>{mk_name}</b> (Luar Jadwal)\n"
-                    f"  Status Sesi : 🟠 <code>[Sesi Luar Jadwal: Hadir ({m_today} Sesi)]</code>\n"
-                    f"  Total Hadir : {hadir_sem} kali pertemuan dalam semester ini.\n\n"
-                )
-            else:
-                txt += (
-                    f"• <b>{mk_name}</b>\n"
-                    f"  Total Hadir : {hadir_sem} kali pertemuan dalam semester ini.\n\n"
-                )
-        return txt
+            txt += "\n" + ("═" * 32) + "\n\n"
+            txt += "📌 <b>STATUS PRESENSI HARI INI:</b>\n\n"
+            for idx, (acc, stats) in enumerate(all_stats, 1):
+                m_name = acc.user_info.get('nama', acc.name) if acc.user_info else acc.name
+                txt += f"<b>[{idx}] {m_name}:</b>\n"
+                if not stats:
+                    txt += "  <i>Gagal memuat rincian kuliah.</i>\n\n"
+                    continue
+                found_any = False
+                for item in stats['breakdown']:
+                    if item.get('m_today', 0) > 0 or item.get('d_today', 0) > 0:
+                        found_any = True
+                        m_today = item['m_today']
+                        d_today = item['d_today']
+                        tag = "🟢 Hadir" if m_today > 0 else "⚠️ Belum Hadir"
+                        txt += f"  • {item['nama']}: {tag} ({m_today}/{d_today} sesi)\n"
+                if not found_any:
+                    txt += "  • <i>Tidak ada perkuliahan aktif hari ini.</i>\n"
+                txt += f"  • Total Kehadiran: {stats['total_mhs_semester']} kali hadir semester ini.\n\n"
 
-    def format_tugas_text(self):
-        tasks = self.get_pending_tasks()
-        if not tasks:
-            return "<b>DAFTAR TUGAS KULIAH</b>\n\nSemua tugas semester ini telah dikumpulkan atau tidak ada tugas aktif."
+            txt += "💡 <i>Ketik <code>/rekap 1</code> atau <code>/rekap 2</code> untuk melihat detail per mahasiswa.</i>"
+            return txt
 
-        txt = "<b>DAFTAR TUGAS PENDING (BELUM DIKUMPULKAN):</b>\n\n"
-        links_dict = {}
+        if self.accounts:
+            return self.accounts[0].format_rekap_detail()
+        return "Belum ada akun mahasiswa aktif."
 
-        for idx, t in enumerate(tasks, 1):
-            k_id = t.get('kuliah_id')
-            mk = t.get('matkul', 'Mata Kuliah')
-            if k_id and mk not in links_dict:
-                links_dict[mk] = f"https://ethol.pens.ac.id/mahasiswa/matakuliah/{k_id}/tugas"
+    def format_tugas_text(self, student_acc=None, is_admin=False, target_arg=None):
+        if student_acc and not is_admin:
+            return student_acc.format_tugas_text()
+
+        # Admin: cek jika meminta mahasiswa spesifik (/tugas 2)
+        if is_admin and target_arg and str(target_arg).isdigit():
+            idx = int(target_arg) - 1
+            if 0 <= idx < len(self.accounts):
+                return self.accounts[idx].format_tugas_text()
+
+        # Admin Multi-Akun (≥ 2): Sajikan Rekapitulasi Tugas Agregat
+        if is_admin and len(self.accounts) > 1:
+            txt = (
+                "📝 <b>REKAPITULASI TUGAS MULTI-MAHASISWA</b>\n"
+                f"<i>Pemantauan tugas aktif untuk {len(self.accounts)} mahasiswa</i>\n\n"
+            )
+            for idx, acc in enumerate(self.accounts, 1):
+                m_name = acc.user_info.get('nama', acc.name) if acc.user_info else acc.name
+                tasks = acc.get_pending_tasks()
+                txt += f"👤 <b>[{idx}] {m_name}</b> — <b>{len(tasks)} Tugas Pending:</b>\n"
+                if not tasks:
+                    txt += "   🎉 <i>Semua tugas tuntas dikerjakan!</i>\n\n"
+                else:
+                    for t_idx, t in enumerate(tasks, 1):
+                        mk = t.get('matkul', 'Mata Kuliah')
+                        title = t.get('title') or t.get('judul')
+                        deadline = t.get('deadline') or '-'
+                        txt += f"   {t_idx}. <b>{title}</b>\n      📚 {mk} • ⏰ <code>{deadline}</code>\n"
+                    txt += "\n"
+
+            txt += "💡 <i>Ketik <code>/tugas 1</code> atau <code>/tugas 2</code> untuk tautan web pengumpulan per mahasiswa.</i>"
+            return txt
+
+        if self.accounts:
+            return self.accounts[0].format_tugas_text()
+        return "Belum ada akun mahasiswa aktif."
+
+    def format_jadwal_text(self, student_acc=None, is_admin=False, target_arg=None):
+        if student_acc and not is_admin:
+            return student_acc.format_jadwal_text()
+
+        # Admin: cek jika meminta mahasiswa spesifik (/jadwal 2)
+        if is_admin and target_arg and str(target_arg).isdigit():
+            idx = int(target_arg) - 1
+            if 0 <= idx < len(self.accounts):
+                return self.accounts[idx].format_jadwal_text()
+
+        # Admin: cek jika meminta jadwal lengkap semua hari (/jadwal all)
+        if is_admin and target_arg and target_arg.lower() == 'all' and len(self.accounts) > 1:
+            txt = "🗓️ <b>JADWAL LENGKAP MULTI-MAHASISWA (SEMUA HARI):</b>\n\n"
+            for idx, acc in enumerate(self.accounts, 1):
+                m_name = acc.user_info.get('nama', acc.name) if acc.user_info else acc.name
+                txt += f"👤 <b>[{idx}] {m_name.upper()}:</b>\n"
+                txt += acc.format_jadwal_text() + "\n" + ("═" * 30) + "\n\n"
+            return txt
+
+        # Admin Multi-Akun (≥ 2): Sajikan Agenda Kuliah Hari Ini Per Mahasiswa
+        if is_admin and len(self.accounts) > 1:
+            now_wib = get_wib_now()
+            today_idx = now_wib.weekday()
+            day_names = {0: "senin", 1: "selasa", 2: "rabu", 3: "kamis", 4: "jumat", 5: "sabtu", 6: "minggu"}
+            today_day = day_names.get(today_idx, "")
+
+            txt = (
+                f"🗓️ <b>AGENDA KULIAH HARI INI ({today_day.upper()})</b>\n"
+                f"<i>Pemantauan jadwal perkuliahan untuk {len(self.accounts)} mahasiswa</i>\n\n"
+            )
+            for idx, acc in enumerate(self.accounts, 1):
+                m_name = acc.user_info.get('nama', acc.name) if acc.user_info else acc.name
+                acc.update_cache()
+                today_items = [it for it in acc.schedule_cache if str(it.get('hari', '')).lower().replace("'", "").strip() == today_day]
+
+                txt += f"👤 <b>[{idx}] {m_name.upper()}:</b>\n"
+                if today_items:
+                    for it in today_items:
+                        jam = f"{it.get('jam_awal', '-')} - {it.get('jam_akhir', '-')}"
+                        mk = it.get('matakuliah', '-')
+                        ruang = it.get('ruang') or 'Online'
+                        txt += f"  • <code>{jam} WIB</code>: <b>{mk}</b> (📍 {ruang})\n"
+                else:
+                    txt += "  • <i>Tidak ada perkuliahan terjadwal hari ini.</i>\n"
+                txt += "\n"
 
             txt += (
-                f"<b>{idx}. {t['title']}</b>\n"
-                f"   Mata Kuliah : {mk}\n"
-                f"   Tenggat     : <code>{t['deadline']}</code>\n\n"
+                "💡 <b>Pilihan Jadwal Lengkap:</b>\n"
+                "• Detail seminggu per mahasiswa: <code>/jadwal 1</code> atau <code>/jadwal 2</code>\n"
+                "• Detail seminggu semua mahasiswa: <code>/jadwal all</code>"
             )
+            return txt
 
-        if len(links_dict) == 1:
-            _, url_tugas = next(iter(links_dict.items()))
-            txt += f"Tautan Web : {url_tugas}\n"
-        else:
-            txt += "<b>Tautan Web Pengumpulan:</b>\n"
-            for mk_name, url_tugas in links_dict.items():
-                txt += f"• {mk_name} :\n  {url_tugas}\n"
-
-        txt += (
-            "\n⚠️ <i>Catatan: Harap pastikan Anda sudah login ke akun ETHOL di browser "
-            "terlebih dahulu sebelum membuka tautan di atas agar dapat langsung diarahkan ke tugas tersebut.</i>"
-        )
-        return txt
-
-    def format_jadwal_text(self):
-        self.update_cache(force=True)
-        if not self.schedule_cache:
-            return "Data jadwal perkuliahan belum tersedia."
-
-        now_wib = get_wib_now()
-        today_idx = now_wib.weekday()
-        day_names = {0: "senin", 1: "selasa", 2: "rabu", 3: "kamis", 4: "jumat", 5: "sabtu", 6: "minggu"}
-        today_day_clean = day_names.get(today_idx, "")
-
-        def clean_day(d):
-            return str(d or '').lower().replace("'", "").replace("`", "").strip()
-
-        def get_day_val(item):
-            if 'nomor_hari' in item and item['nomor_hari']:
-                return item['nomor_hari']
-            return DAY_ORDER.get(clean_day(item.get('hari', '')), 99)
-
-        sorted_jadwal = sorted(self.schedule_cache, key=lambda x: (get_day_val(x), x.get('jam_awal', '00:00')))
-
-        txt = f"<b>JADWAL KULIAH (Semester {self.semester_aktif}/{self.tahun_aktif}):</b>\n"
-        curr_day = ""
-
-        for item in sorted_jadwal:
-            d_raw = str(item.get('hari', '') or '').strip()
-            if not d_raw or d_raw.lower() == "none":
-                d_raw = "Lainnya"
-            d_clean = clean_day(d_raw)
-
-            if d_raw != curr_day:
-                curr_day = d_raw
-                tag = " (HARI INI)" if d_clean == today_day_clean else ""
-                txt += f"\n🗓️ <b>[{curr_day.upper()}{tag}]</b>\n"
-
-            jam_awal = item.get('jam_awal', '-')
-            jam_akhir = item.get('jam_akhir', '-')
-            mk = item.get('matakuliah', '-')
-            dosen = item.get('dosen') or "Dosen Pengampu"
-            ruang = item.get('ruang') or "Online"
-
-            jam_str = "Fleksibel" if not jam_awal or jam_awal == "-" else f"{jam_awal} - {jam_akhir}"
-
-            txt += (
-                f"• <b>{mk}</b>\n"
-                f"  ⏰ <code>{jam_str} WIB</code> • 📍 {ruang}\n"
-                f"  👨‍🏫 <i>{dosen}</i>\n\n"
-            )
-        return txt
+        if self.accounts:
+            return self.accounts[0].format_jadwal_text()
+        return "Belum ada akun mahasiswa aktif."
 
     def get_raw_logs(self, max_lines=15):
         if not os.path.exists(LOG_FILE):
@@ -2135,29 +2132,41 @@ class EtholBot:
         if loading_id:
             self.advance_loading_bar(loading_id, "Mengambil data...", chat_id=target_chat_id)
 
-        # Perintah Mahasiswa:
-        if c in ['/jadwal', '/matkul', 'jadwal']:
-            jadwal_txt = current_acc.format_jadwal_text() if current_acc else self.format_jadwal_text()
+        # Parsing argumen tambahan jika ada (contoh: /jadwal 2, /rekap all, dll)
+        cmd_parts = cmd.split(maxsplit=1)
+        sub_arg = cmd_parts[1].strip() if len(cmd_parts) > 1 else None
+
+        # Perintah Mahasiswa / Dashboard:
+        if c.startswith('/jadwal') or c.startswith('/matkul') or c.startswith('jadwal'):
+            jadwal_txt = self.format_jadwal_text(student_acc=current_acc, is_admin=is_admin, target_arg=sub_arg)
             res_id = self.send_tg(f"{jadwal_txt}{credit}", chat_id=target_chat_id)
             if res_id: current_batch.append(res_id)
 
-        elif c in ['/rekap', 'rekap']:
-            rekap_txt = current_acc.format_rekap_detail() if current_acc else self.format_rekap_detail()
+        elif c.startswith('/rekap') or c.startswith('rekap'):
+            rekap_txt = self.format_rekap_detail(student_acc=current_acc, is_admin=is_admin, target_arg=sub_arg)
             res_id = self.send_tg(f"{rekap_txt}{credit}", chat_id=target_chat_id)
             if res_id: current_batch.append(res_id)
 
-        elif c in ['/tugas', 'tugas']:
-            tugas_txt = current_acc.format_tugas_text() if current_acc else self.format_tugas_text()
+        elif c.startswith('/tugas') or c.startswith('tugas'):
+            tugas_txt = self.format_tugas_text(student_acc=current_acc, is_admin=is_admin, target_arg=sub_arg)
             res_id = self.send_tg(f"{tugas_txt}{credit}", chat_id=target_chat_id)
             if res_id: current_batch.append(res_id)
 
-        elif c in ['/status', 'status']:
-            status_txt = current_acc.format_status_text(self) if current_acc else self.format_status_text()
+        elif c.startswith('/status') or c.startswith('status'):
+            status_txt = self.format_status_text(student_acc=current_acc, is_admin=is_admin)
             res_id = self.send_tg(f"{status_txt}{credit}", chat_id=target_chat_id)
             if res_id: current_batch.append(res_id)
 
-        elif c in ['/scan', '/absen', 'scan', 'absen']:
-            if current_acc:
+        elif c.startswith('/scan') or c.startswith('/absen') or c.startswith('scan') or c.startswith('absen'):
+            if is_admin and sub_arg and sub_arg.isdigit():
+                idx = int(sub_arg) - 1
+                if 0 <= idx < len(self.accounts):
+                    res = self.accounts[idx].scan_and_attend(notify_callback=self.notify_attendance, manual=True)
+                else:
+                    res = f"❌ Akun urutan #{sub_arg} tidak ditemukan."
+            elif is_admin and len(self.accounts) > 1:
+                res = self.scan_and_attend(manual=True)
+            elif current_acc:
                 res = current_acc.scan_and_attend(notify_callback=self.notify_attendance, manual=True)
             else:
                 res = self.scan_and_attend(manual=True)
@@ -2220,7 +2229,7 @@ class EtholBot:
                 if len(parts) < 3:
                     res_id = self.send_tg(
                         "⚠️ <b>Format Perintah /settelegram:</b>\n"
-                        "<code>/settelegram email_atau_nomor telegram_chat_id</code>\n\n"
+                        "<code>/settelegram email_atau_urutan telegram_chat_id</code>\n\n"
                         "<i>Contoh:</i>\n"
                         "<code>/settelegram 2 1234567890</code>"
                         + credit,
@@ -2244,7 +2253,7 @@ class EtholBot:
                 if len(parts) < 2:
                     res_id = self.send_tg(
                         "⚠️ <b>Format Perintah /delaccount:</b>\n"
-                        "<code>/delaccount email@student.pens.ac.id</code> atau nomor urut"
+                        "<code>/delaccount email@student.pens.ac.id</code> atau urutan akun (contoh: <code>/delaccount 2</code>)"
                         + credit,
                         chat_id=target_chat_id
                     )

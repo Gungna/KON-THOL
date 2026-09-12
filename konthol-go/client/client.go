@@ -38,12 +38,13 @@ type CourseItem struct {
 	NamaMatakuliah interface{} `json:"nama_matakuliah"`
 	Matakuliah     interface{} `json:"matakuliah"`
 	Dosen          string      `json:"dosen"`
+	NomorDosen     interface{} `json:"nomor_dosen"`
 	KuliahAsal     int         `json:"kuliah_asal"`
 }
 
 func (c *CourseItem) CourseName() string {
 	if m, ok := c.NamaMatakuliah.(map[string]interface{}); ok {
-		if n, ok := m["nama"].(string); ok {
+		if n, ok := m["nama"].(string); ok && n != "" {
 			return n
 		}
 	}
@@ -51,7 +52,7 @@ func (c *CourseItem) CourseName() string {
 		return n
 	}
 	if m, ok := c.Matakuliah.(map[string]interface{}); ok {
-		if n, ok := m["nama"].(string); ok {
+		if n, ok := m["nama"].(string); ok && n != "" {
 			return n
 		}
 	}
@@ -63,13 +64,38 @@ func (c *CourseItem) CourseName() string {
 
 type ScheduleItem struct {
 	Nomor          int         `json:"nomor"`
+	Kuliah         int         `json:"kuliah"`
 	Hari           string      `json:"hari"`
-	JamMulai       string      `json:"jam_mulai"`
-	JamSelesai     string      `json:"jam_selesai"`
+	JamAwal        string      `json:"jam_awal"`
+	JamAkhir       string      `json:"jam_akhir"`
 	Ruang          string      `json:"ruang"`
 	NamaMatakuliah interface{} `json:"nama_matakuliah"`
 	Matakuliah     interface{} `json:"matakuliah"`
 	Dosen          string      `json:"dosen"`
+	NomorHari      int         `json:"nomor_hari"`
+}
+
+func (s *ScheduleItem) CourseName() string {
+	if m, ok := s.NamaMatakuliah.(map[string]interface{}); ok {
+		if n, ok := m["nama"].(string); ok && n != "" {
+			return n
+		}
+	}
+	if n, ok := s.NamaMatakuliah.(string); ok && n != "" {
+		return n
+	}
+	if m, ok := s.Matakuliah.(map[string]interface{}); ok {
+		if n, ok := m["nama"].(string); ok && n != "" {
+			return n
+		}
+	}
+	if n, ok := s.Matakuliah.(string); ok && n != "" {
+		return n
+	}
+	if s.Dosen != "" {
+		return s.Dosen
+	}
+	return fmt.Sprintf("Kuliah #%d", s.Nomor)
 }
 
 type AttendancePayload struct {
@@ -83,6 +109,33 @@ type AttendancePayload struct {
 type AttendanceResponse struct {
 	Sukses bool   `json:"sukses"`
 	Pesan  string `json:"pesan"`
+}
+
+type CourseStatBreakdown struct {
+	KuliahID int    `json:"kuliah_id"`
+	Nama     string `json:"nama"`
+	Hadir    int    `json:"hadir"`
+	Total    int    `json:"total"`
+	DToday   int    `json:"d_today"`
+	MToday   int    `json:"m_today"`
+}
+
+type AttendanceStatistics struct {
+	Percentage         float64               `json:"percentage"`
+	TotalDosenSemester int                   `json:"total_dosen_semester"`
+	TotalMhsSemester   int                   `json:"total_mhs_semester"`
+	TotalDosenToday    int                   `json:"total_dosen_today"`
+	TotalMhsToday      int                   `json:"total_mhs_today"`
+	Breakdown          []CourseStatBreakdown `json:"breakdown"`
+}
+
+type TaskItem struct {
+	KuliahID    int    `json:"kuliah_id"`
+	TugasID     int    `json:"tugas_id"`
+	Matkul      string `json:"matkul"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Deadline    string `json:"deadline"`
 }
 
 type EtholClient struct {
@@ -126,13 +179,12 @@ func (c *EtholClient) LoginCAS() (bool, error) {
 
 	log.Printf("[ETHOL] Melakukan otentikasi CAS SSO PENS untuk %s...", c.Username)
 
-	// 1. GET cas-redirect
 	casURL := "https://ethol.pens.ac.id/api/auth/cas-redirect"
 	req, err := http.NewRequest(http.MethodGet, casURL, nil)
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -145,10 +197,8 @@ func (c *EtholClient) LoginCAS() (bool, error) {
 		return false, fmt.Errorf("read cas response failed: %w", err)
 	}
 
-	// 2. Parse HTML form with id 'fm1'
 	actionURL, formData, found := parseCASForm(string(bodyBytes), resp.Request.URL)
 	if !found {
-		// Cek apakah token sudah valid
 		valid, info := c.checkTokenUnsafe()
 		if valid {
 			c.UserInfo = info
@@ -159,7 +209,6 @@ func (c *EtholClient) LoginCAS() (bool, error) {
 		return false, fmt.Errorf("form login CAS tidak ditemukan pada gateway SSO")
 	}
 
-	// 3. Populate form credentials
 	formData.Set("username", c.Username)
 	formData.Set("password", c.Password)
 	formData.Set("_eventId", "submit")
@@ -170,7 +219,7 @@ func (c *EtholClient) LoginCAS() (bool, error) {
 		return false, err
 	}
 	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	postReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	postReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
 	postResp, err := c.HTTPClient.Do(postReq)
 	if err != nil {
@@ -178,7 +227,6 @@ func (c *EtholClient) LoginCAS() (bool, error) {
 	}
 	defer postResp.Body.Close()
 
-	// 4. Validate Token
 	valid, info := c.checkTokenUnsafe()
 	if !valid {
 		return false, fmt.Errorf("validasi token gagal setelah login CAS")
@@ -195,7 +243,7 @@ func (c *EtholClient) checkTokenUnsafe() (bool, *UserInfo) {
 	if err != nil {
 		return false, nil
 	}
-	valReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
+	valReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 
 	valResp, err := c.HTTPClient.Do(valReq)
 	if err != nil || valResp.StatusCode != http.StatusOK {
@@ -243,7 +291,6 @@ func (c *EtholClient) UpdateCache(force bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 1. Fetch Config
 	confReq, _ := http.NewRequest(http.MethodGet, "https://ethol.pens.ac.id/api/auth/config", nil)
 	confResp, err := c.HTTPClient.Do(confReq)
 	if err != nil {
@@ -258,7 +305,6 @@ func (c *EtholClient) UpdateCache(force bool) error {
 	}
 	c.EtholConfig = &cfg
 
-	// 2. Fetch Courses
 	cURL := fmt.Sprintf("https://ethol.pens.ac.id/api/kuliah?tahun=%d&semester=%d", cfg.TahunAktif, cfg.SemesterAktif)
 	cReq, _ := http.NewRequest(http.MethodGet, cURL, nil)
 	cResp, err := c.HTTPClient.Do(cReq)
@@ -272,7 +318,6 @@ func (c *EtholClient) UpdateCache(force bool) error {
 		cResp.Body.Close()
 	}
 
-	// 3. Fetch Schedule
 	jURL := fmt.Sprintf("https://ethol.pens.ac.id/api/jadwal/jadwal-online?tahun=%d&semester=%d", cfg.TahunAktif, cfg.SemesterAktif)
 	jReq, _ := http.NewRequest(http.MethodGet, jURL, nil)
 	jResp, err := c.HTTPClient.Do(jReq)
@@ -325,7 +370,6 @@ func (c *EtholClient) CheckActivePresence(courseID, jenisSchema int) (string, er
 		return "", err
 	}
 
-	// Extract key from JSON (could be array or object)
 	var raw interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return "", err
@@ -389,6 +433,213 @@ func (c *EtholClient) SubmitAttendance(courseID, jenisSchema int, key string, ku
 
 	success := res.Sukses || strings.Contains(strings.ToLower(res.Pesan), "sudah")
 	return success, res.Pesan, nil
+}
+
+func (c *EtholClient) GetAttendanceStatistics(todayDateStr string) (*AttendanceStatistics, error) {
+	c.mu.RLock()
+	userInfo := c.UserInfo
+	courses := c.CoursesCache
+	ethCfg := c.EtholConfig
+	c.mu.RUnlock()
+
+	if userInfo == nil || len(courses) == 0 {
+		return nil, fmt.Errorf("user info atau courses cache belum tersedia")
+	}
+
+	nomorMhs := userInfo.Nomor
+	tahunAktif := time.Now().Year()
+	semesterAktif := 1
+	if ethCfg != nil {
+		tahunAktif = ethCfg.TahunAktif
+		semesterAktif = ethCfg.SemesterAktif
+	}
+
+	totalDosenSemester := 0
+	totalMhsSemester := 0
+	totalDosenToday := 0
+	totalMhsToday := 0
+
+	var breakdown []CourseStatBreakdown
+
+	for _, cr := range courses {
+		kID := cr.Nomor
+		schema := cr.JenisSchema
+		mkName := cr.CourseName()
+
+		mhsURL := fmt.Sprintf("https://ethol.pens.ac.id/api/presensi/riwayat?kuliah=%d&jenis_schema=%d&nomor=%d", kID, schema, nomorMhs)
+		mhsReq, _ := http.NewRequest(http.MethodGet, mhsURL, nil)
+		mhsResp, err := c.HTTPClient.Do(mhsReq)
+		var mhsList []map[string]interface{}
+		if err == nil && mhsResp.StatusCode == http.StatusOK {
+			_ = json.NewDecoder(mhsResp.Body).Decode(&mhsList)
+			mhsResp.Body.Close()
+		} else if mhsResp != nil {
+			mhsResp.Body.Close()
+		}
+
+		dosenURL := fmt.Sprintf("https://ethol.pens.ac.id/api/presensi/get-tanggal-presensi-dosen-per-semester?tahun=%d&semester=%d&kuliah=%d&dosen=%v",
+			tahunAktif, semesterAktif, kID, cr.NomorDosen)
+		dosenReq, _ := http.NewRequest(http.MethodGet, dosenURL, nil)
+		dosenResp, err := c.HTTPClient.Do(dosenReq)
+		var dosenList []map[string]interface{}
+		if err == nil && dosenResp.StatusCode == http.StatusOK {
+			_ = json.NewDecoder(dosenResp.Body).Decode(&dosenList)
+			dosenResp.Body.Close()
+		} else if dosenResp != nil {
+			dosenResp.Body.Close()
+		}
+
+		dToday := 0
+		for _, d := range dosenList {
+			w1 := fmt.Sprintf("%v", d["waktu_indonesia"])
+			w2 := fmt.Sprintf("%v", d["waktu"])
+			if strings.Contains(w1, todayDateStr) || strings.Contains(w2, todayDateStr) {
+				dToday++
+			}
+		}
+
+		mToday := 0
+		for _, m := range mhsList {
+			t1 := fmt.Sprintf("%v", m["tanggal"])
+			t2 := fmt.Sprintf("%v", m["waktu_indonesia"])
+			if strings.Contains(t1, todayDateStr) || strings.Contains(t2, todayDateStr) {
+				mToday++
+			}
+		}
+
+		totalDosenSemester += len(dosenList)
+		totalMhsSemester += len(mhsList)
+		totalDosenToday += dToday
+		totalMhsToday += mToday
+
+		breakdown = append(breakdown, CourseStatBreakdown{
+			KuliahID: kID,
+			Nama:     mkName,
+			Hadir:    len(mhsList),
+			Total:    len(dosenList),
+			DToday:   dToday,
+			MToday:   mToday,
+		})
+	}
+
+	pct := 100.0
+	if totalDosenSemester > 0 {
+		pct = (float64(totalMhsSemester) / float64(totalDosenSemester)) * 100.0
+	}
+
+	return &AttendanceStatistics{
+		Percentage:         pct,
+		TotalDosenSemester: totalDosenSemester,
+		TotalMhsSemester:   totalMhsSemester,
+		TotalDosenToday:    totalDosenToday,
+		TotalMhsToday:      totalMhsToday,
+		Breakdown:          breakdown,
+	}, nil
+}
+
+func (c *EtholClient) GetPendingTasks() ([]TaskItem, error) {
+	c.mu.RLock()
+	courses := c.CoursesCache
+	c.mu.RUnlock()
+
+	var pending []TaskItem
+	for _, cr := range courses {
+		kID := cr.Nomor
+		schema := cr.JenisSchema
+		mkName := cr.CourseName()
+
+		tURL := fmt.Sprintf("https://ethol.pens.ac.id/api/tugas?kuliah=%d&jenisSchema=%d", kID, schema)
+		req, _ := http.NewRequest(http.MethodGet, tURL, nil)
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			continue
+		}
+
+		var tasks []map[string]interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&tasks)
+		resp.Body.Close()
+
+		for _, t := range tasks {
+			subTime := t["submission_time"]
+			tutup := fmt.Sprintf("%v", t["tutup"])
+			if subTime == nil && tutup != "1" {
+				title := fmt.Sprintf("%v", t["title"])
+				if title == "<nil>" || title == "" {
+					title = fmt.Sprintf("%v", t["judul"])
+				}
+				desc := fmt.Sprintf("%v", t["description"])
+				if desc == "<nil>" {
+					desc = fmt.Sprintf("%v", t["deskripsi"])
+				}
+				dl := fmt.Sprintf("%v", t["deadline_indonesia"])
+				if dl == "<nil>" || dl == "" {
+					dl = fmt.Sprintf("%v", t["deadline"])
+				}
+
+				tID := 0
+				if num, ok := t["id"].(float64); ok {
+					tID = int(num)
+				}
+
+				pending = append(pending, TaskItem{
+					KuliahID:    kID,
+					TugasID:     tID,
+					Matkul:      mkName,
+					Title:       title,
+					Description: desc,
+					Deadline:    dl,
+				})
+			}
+		}
+	}
+	return pending, nil
+}
+
+func (c *EtholClient) GetUnreadNotifications() (int, []string, error) {
+	req, _ := http.NewRequest(http.MethodGet, "https://ethol.pens.ac.id/api/notifikasi/mahasiswa-belum-baca", nil)
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return 0, nil, err
+	}
+
+	var countData struct {
+		Jumlah int `json:"jumlah"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&countData)
+	resp.Body.Close()
+
+	if countData.Jumlah == 0 {
+		return 0, nil, nil
+	}
+
+	nURL := "https://ethol.pens.ac.id/api/notifikasi/mahasiswa?filterNotif=SEMUA"
+	nReq, _ := http.NewRequest(http.MethodGet, nURL, nil)
+	nResp, err := c.HTTPClient.Do(nReq)
+	if err != nil || nResp.StatusCode != http.StatusOK {
+		if nResp != nil {
+			nResp.Body.Close()
+		}
+		return countData.Jumlah, nil, nil
+	}
+	defer nResp.Body.Close()
+
+	var notifs []map[string]interface{}
+	_ = json.NewDecoder(nResp.Body).Decode(&notifs)
+
+	var lines []string
+	for _, n := range notifs {
+		judul := fmt.Sprintf("%v", n["judul"])
+		isi := fmt.Sprintf("%v", n["isi"])
+		lines = append(lines, fmt.Sprintf("• <b>%s</b>: %s", judul, isi))
+	}
+
+	return countData.Jumlah, lines, nil
 }
 
 func parseCASForm(htmlContent string, baseURL *url.URL) (string, url.Values, bool) {

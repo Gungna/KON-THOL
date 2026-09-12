@@ -23,6 +23,9 @@ Sistem dapat dijalankan secara fleksibel sesuai infrastruktur yang tersedia:
    - **Di Android (Termux):** Notifikasi sistem dikirim ke status bar perangkat melalui integrasi `termux-api`.
    - **Di Terminal PC/Linux:** Notifikasi serta status proses dicetak rapi secara real-time di layar konsol.
    - **Mode Interaktif CLI:** Perintah dapat diketik langsung di terminal seperti `scan`, `jadwal`, `tugas`, `rekap`, `log`, `status`, `cooldown`, atau `resume`.
+3. **Modul Khusus Multi-Akun & WhatsApp Gateway**:
+   - Menjalankan pemindaian presensi serentak untuk banyak akun mahasiswa menggunakan `kon_thol_public.py`.
+   - Laporan kehadiran dikirimkan langsung ke nomor WhatsApp masing-masing mahasiswa (mendukung Fonnte atau self-hosted gateway seperti WAHA / Evolution API) dengan fallback Telegram.
 
 > [!IMPORTANT]
 > **Catatan Stabilitas Operasional:** Pengoperasian di smartphone Android (Termux) atau laptop pribadi berpotensi terhenti sewaktu-waktu akibat manajemen penghemat daya (*battery saver*) atau mode sleep perangkat. Untuk operasional presensi yang **stabil, konsisten, dan teruji 24/7**, disarankan menjalankan bot di server Linux / VPS mandiri yang terhubung ke Bot Telegram.
@@ -56,6 +59,69 @@ Sistem dapat dijalankan secara fleksibel sesuai infrastruktur yang tersedia:
   Menampilkan catatan riwayat aktivitas sistem terkini (via `/log` atau CLI `log`) untuk memudahkan pemantauan proses tanpa membuka berkas log secara manual.
 - **Mode Cooldown & Siaga Manual**:  
   Mendukung pengistirahatan proses scanner secara manual saat seluruh kuliah selesai (`/cooldown`) dan mengaktifkannya kembali kapan saja (`/resume`).
+
+---
+
+## Panduan Integrasi Telegram Bot (Dari Awal Sampai Selesai)
+
+Setiap pengguna membuat dan menggunakan Bot Telegram pribadi secara mandiri tanpa biaya. Berikut alur penyiapan dari awal:
+
+1. **Pembuatan Bot di Telegram**:
+   - Buka aplikasi Telegram, cari akun resmi **@BotFather**, lalu tekan tombol Start.
+   - Kirim perintah `/newbot`.
+   - Masukkan nama tampilan bot yang diinginkan (contoh: `Asisten Presensi PENS`).
+   - Masukkan username bot unik yang berakhiran kata `bot` (contoh: `pens_presensi_robot`).
+   - BotFather akan memberikan **HTTP API Token** (contoh format: `7123456789:AAFxX...`). Simpan token ini dengan aman.
+2. **Mendapatkan Telegram Chat ID**:
+   - Cari akun bot **@userinfobot** di Telegram, lalu tekan tombol Start.
+   - Bot akan membalas dengan menampilkan nomor ID Telegram pengguna (berupa deretan angka).
+3. **Mengaktifkan Izin Pesan Bot**:
+   - Cari username bot pribadi yang baru saja dibuat di langkah nomor 1.
+   - Tekan tombol **Start** atau kirim pesan `/start` ke bot tersebut agar bot memiliki izin mengirimkan notifikasi.
+4. **Penyimpanan Konfigurasi**:
+   - Jalankan wizard otomatis:
+     ```bash
+     python setup.py
+     ```
+   - Masukkan email SSO PENS, password SSO, Token Bot Telegram, serta Chat ID saat diminta. Seluruh konfigurasi akan tersimpan otomatis di berkas lokal `credentials.json`.
+
+---
+
+## Panduan Integrasi WhatsApp Gateway (Dari Awal Sampai Selesai)
+
+Untuk pengiriman notifikasi presensi otomatis melalui WhatsApp ke nomor pribadi maupun rekan kelompok, sistem menyediakan integrasi gateway pada berkas `kon_thol_public.py`.
+
+### Pilihan A: Menggunakan Layanan Cloud Gateway (Fonnte)
+1. Buka situs penyedia gateway **Fonnte** dan lakukan pendaftaran akun.
+2. Masuk ke dashboard Fonnte, lalu hubungkan nomor WhatsApp pengirim dengan memindai kode QR pada menu *Perangkat Tertaut* di aplikasi WhatsApp smartphone.
+3. Buka menu *API Token* di dashboard Fonnte, lalu salin token yang tersedia.
+4. Buka berkas `accounts.json` (salinan dari `accounts.example.json`), lalu sesuaikan bagian konfigurasi:
+   ```json
+   "whatsapp": {
+       "provider": "fonnte",
+       "api_key": "MASUKKAN_TOKEN_FONNTE_DISINI",
+       "target_phone": "6281234567890",
+       "endpoint_url": "https://api.fonnte.com/send"
+   }
+   ```
+5. Masukkan nomor WhatsApp tujuan pada masing-masing data akun mahasiswa di daftar `accounts`. Format nomor diawali kode negara tanpa tanda tambah (contoh: `6281234567890`).
+
+### Pilihan B: Menggunakan Gateway Mandiri / Self-Hosted (WAHA / Evolution API / Webhook)
+1. Jalankan layanan gateway WhatsApp seperti **WAHA (WhatsApp HTTP API)** atau **Evolution API** di server pribadi (misal menggunakan Docker).
+2. Tautkan nomor WhatsApp pada instance gateway tersebut melalui dashboard lokal.
+3. Pada berkas `accounts.json`, ubah nilai `provider` menjadi `webhook` dan arahkan `endpoint_url` ke alamat server gateway:
+   ```json
+   "whatsapp": {
+       "provider": "webhook",
+       "api_key": "BEARER_TOKEN_JIKA_ADA",
+       "target_phone": "6281234567890",
+       "endpoint_url": "http://IP_SERVER_GATEWAY:PORT/api/sendText"
+   }
+   ```
+4. Jalankan modul multi-akun:
+   ```bash
+   python kon_thol_public.py
+   ```
 
 ---
 
@@ -139,9 +205,10 @@ Pengelolaan akun dapat dilakukan langsung melalui antarmuka Telegram oleh Admin 
 ```
 KON-THOL/
 ├── ethol_autopresence.py      # Engine utama presensi, Telegram bot, dan multi-akun
+├── kon_thol_public.py         # Modul presensi multi-akun serentak & WhatsApp Gateway
 ├── setup.py                   # Wizard interaktif konfigurasi awal akun & bot
 ├── config.example.json        # Template struktur kredensial akun tunggal
-├── accounts.example.json      # Template struktur kredensial multi-akun
+├── accounts.example.json      # Template struktur kredensial multi-akun & WhatsApp
 ├── credentials.json           # Berkas kredensial aktif lokal (JANGAN DI-COMMIT)
 ├── accounts.json              # Berkas data multi-akun aktif lokal (JANGAN DI-COMMIT)
 ├── attended_keys.json         # Riwayat kunci presensi terverifikasi (auto-generated)

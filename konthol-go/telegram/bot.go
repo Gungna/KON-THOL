@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -32,6 +35,7 @@ type Message struct {
 	From      User   `json:"from"`
 	Chat      Chat   `json:"chat"`
 	Text      string `json:"text"`
+	Caption   string `json:"caption,omitempty"`
 	Date      int64  `json:"date"`
 }
 
@@ -59,6 +63,7 @@ type TelegramBot struct {
 	AdminChatID    string
 	HTTPClient     *http.Client
 	LastMenuMsgID  int
+	IsBannerActive bool
 	LastUpdateID   int
 	CommandHandler func(cmd string, chatID int64, msgID int)
 	ActionHandler  func(action string, chatID int64, msgID int, queryID string)
@@ -107,7 +112,83 @@ func (b *TelegramBot) SendMessage(chatID interface{}, text string, keyboard *Inl
 	return 0, fmt.Errorf("telegram API error on sendMessage")
 }
 
-func (b *TelegramBot) EditMessage(chatID interface{}, messageID int, text string, keyboard *InlineKeyboardMarkup) error {
+func (b *TelegramBot) SendPhotoMenu(chatID interface{}, photoPath, caption string, keyboard *InlineKeyboardMarkup) (int, error) {
+	file, err := os.Open(photoPath)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	part, err := writer.CreateFormFile("photo", filepath.Base(photoPath))
+	if err != nil {
+		return 0, err
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return 0, err
+	}
+
+	_ = writer.WriteField("chat_id", fmt.Sprintf("%v", chatID))
+	_ = writer.WriteField("caption", caption)
+	_ = writer.WriteField("parse_mode", "HTML")
+
+	if keyboard != nil {
+		kbBytes, _ := json.Marshal(keyboard)
+		_ = writer.WriteField("reply_markup", string(kbBytes))
+	}
+	writer.Close()
+
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", b.Token)
+	req, err := http.NewRequest(http.MethodPost, apiURL, body)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := b.HTTPClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	var res struct {
+		OK     bool    `json:"ok"`
+		Result Message `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return 0, err
+	}
+	if res.OK {
+		return res.Result.MessageID, nil
+	}
+	return 0, fmt.Errorf("sendPhoto failed")
+}
+
+func (b *TelegramBot) EditMessageCaption(chatID interface{}, messageID int, caption string, keyboard *InlineKeyboardMarkup) error {
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/editMessageCaption", b.Token)
+
+	payload := map[string]interface{}{
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"caption":    caption,
+		"parse_mode": "HTML",
+	}
+	if keyboard != nil {
+		payload["reply_markup"] = keyboard
+	}
+
+	pBytes, _ := json.Marshal(payload)
+	resp, err := b.HTTPClient.Post(apiURL, "application/json", bytes.NewReader(pBytes))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+func (b *TelegramBot) EditMessageText(chatID interface{}, messageID int, text string, keyboard *InlineKeyboardMarkup) error {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/editMessageText", b.Token)
 
 	payload := map[string]interface{}{
@@ -163,23 +244,80 @@ func (b *TelegramBot) AnswerCallbackQuery(queryID string, text string) {
 	}
 }
 
-// Single-View Menu: replace in-place or send new and record message ID
-func (b *TelegramBot) ShowMenu(chatID interface{}, text string, keyboard *InlineKeyboardMarkup) {
+// In-place Single-View Menu with Banner
+func (b *TelegramBot) SendMenu(chatID interface{}, text string, keyboard *InlineKeyboardMarkup, bannerPaths []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Cari banner yang ada
+	var activeBanner string
+	for _, bp := range bannerPaths {
+		if _, err := os.Stat(bp); err == nil {
+			activeBanner = bp
+			break
+		}
+	}
+
+	if b.LastMenuMsgID > 0 {
+		if b.IsBannerActive {
+			err := b.EditMessageCaption(chatID, b.LastMenuMsgID, text, keyboard)
+			if err == nil {
+				return
+			}
+		} else {
+			err := b.EditMessageText(chatID, b.LastMenuMsgID, text, keyboard)
+			if err == nil {
+				return
+			}
+		}
+		// Hapus menu lama bila gagal diedit
+		b.DeleteMessage(chatID, b.LastMenuMsgID)
+		b.LastMenuMsgID = 0
+		b.IsBannerActive = false
+	}
+
+	// Kirim menu baru
+	if activeBanner != "" {
+		msgID, err := b.SendPhotoMenu(chatID, activeBanner, text, keyboard)
+		if err == nil && msgID > 0 {
+			b.LastMenuMsgID = msgID
+			b.IsBannerActive = true
+			return
+		}
+	}
+
+	// Fallback text menu
+	msgID, err := b.SendMessage(chatID, text, keyboard)
+	if err == nil && msgID > 0 {
+		b.LastMenuMsgID = msgID
+		b.IsBannerActive = false
+	}
+}
+
+// Show Content Card in-place
+func (b *TelegramBot) ShowContentCard(chatID interface{}, text string, keyboard *InlineKeyboardMarkup) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if b.LastMenuMsgID > 0 {
-		err := b.EditMessage(chatID, b.LastMenuMsgID, text, keyboard)
-		if err == nil {
-			return
+		if b.IsBannerActive {
+			err := b.EditMessageCaption(chatID, b.LastMenuMsgID, text, keyboard)
+			if err == nil {
+				return
+			}
+		} else {
+			err := b.EditMessageText(chatID, b.LastMenuMsgID, text, keyboard)
+			if err == nil {
+				return
+			}
 		}
-		// If edit failed (e.g. message too old or deleted), send fresh
-		b.DeleteMessage(chatID, b.LastMenuMsgID)
 	}
 
-	newID, err := b.SendMessage(chatID, text, keyboard)
-	if err == nil && newID > 0 {
-		b.LastMenuMsgID = newID
+	// Fallback send message
+	msgID, err := b.SendMessage(chatID, text, keyboard)
+	if err == nil && msgID > 0 {
+		b.LastMenuMsgID = msgID
+		b.IsBannerActive = false
 	}
 }
 
@@ -208,7 +346,6 @@ func (b *TelegramBot) StartPolling(stopChan <-chan struct{}) {
 					chatID := u.Message.Chat.ID
 					msgID := u.Message.MessageID
 
-					// Delete slash command message from user to keep chat clean
 					go b.DeleteMessage(chatID, msgID)
 
 					if b.CommandHandler != nil {
@@ -260,25 +397,29 @@ func (b *TelegramBot) getUpdates(offset int) ([]Update, error) {
 	return res.Result, nil
 }
 
-// UI Keyboards
-func GetMainKeyboard(page int) *InlineKeyboardMarkup {
+// Keyboards (100% Identical to Python V2)
+func GetMainKeyboard(page int, isCooldown bool) *InlineKeyboardMarkup {
+	var cooldownBtn InlineKeyboardButton
+	if isCooldown {
+		cooldownBtn = InlineKeyboardButton{Text: "⚡ Batalkan Cooldown (Kembali Siaga)", CallbackData: "btn_resume"}
+	} else {
+		cooldownBtn = InlineKeyboardButton{Text: "💤 Istirahat / Cooldown Hari Ini", CallbackData: "btn_cooldown"}
+	}
+
 	if page == 2 {
 		return &InlineKeyboardMarkup{
 			InlineKeyboard: [][]InlineKeyboardButton{
 				{
-					{Text: "📚 Kuliah Saya", CallbackData: "btn_courses"},
-					{Text: "📝 Tugas Kuliah", CallbackData: "btn_tugas"},
+					{Text: "🔔 Notifikasi ETHOL", CallbackData: "btn_notif"},
+					{Text: "ℹ️ Status Engine", CallbackData: "btn_status"},
 				},
 				{
-					{Text: "⏸️ Mode Cooldown", CallbackData: "btn_cooldown"},
-					{Text: "🟢 Siaga Penuh", CallbackData: "btn_resume"},
+					{Text: "🔄 Re-login Session", CallbackData: "btn_relogin"},
+					{Text: "👥 Multi-Account (Public)", CallbackData: "btn_konthol_public"},
 				},
 				{
-					{Text: "👥 Multi-Akun", CallbackData: "btn_accounts"},
-					{Text: "🔄 Relogin CAS", CallbackData: "btn_relogin"},
-				},
-				{
-					{Text: "⏮️ Halaman 1", CallbackData: "btn_page_1"},
+					{Text: "❓ Panduan Bantuan", CallbackData: "btn_help"},
+					{Text: "« Kembali ke Menu Utama", CallbackData: "btn_page_1"},
 				},
 			},
 		}
@@ -288,33 +429,49 @@ func GetMainKeyboard(page int) *InlineKeyboardMarkup {
 	return &InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{
-				{Text: "📊 Status Bot", CallbackData: "btn_status"},
-				{Text: "🔄 Scan Presensi", CallbackData: "btn_scan"},
+				{Text: "⚡ Presensi Manual", CallbackData: "btn_scan"},
 			},
 			{
-				{Text: "📅 Jadwal Hari Ini", CallbackData: "btn_jadwal_hari_ini"},
-				{Text: "📋 Jadwal Lengkap", CallbackData: "btn_jadwal_lengkap"},
+				{Text: "📅 Jadwal Kuliah", CallbackData: "btn_jadwal"},
+				{Text: "📝 Tugas Pending", CallbackData: "btn_tugas"},
 			},
 			{
-				{Text: "📈 Rekapitulasi", CallbackData: "btn_rekap"},
-				{Text: "🔔 Cek Notifikasi", CallbackData: "btn_notif"},
+				{Text: "📊 Rekap Kehadiran", CallbackData: "btn_rekap"},
+				{Text: "📜 Log Aktivitas", CallbackData: "btn_log"},
 			},
 			{
-				{Text: "⏭️ Halaman 2", CallbackData: "btn_page_2"},
+				cooldownBtn,
+			},
+			{
+				{Text: "⏩ Menu Lanjutan (Hal 2) »", CallbackData: "btn_page_2"},
 			},
 		},
 	}
 }
 
-func GetBackKeyboard(page int) *InlineKeyboardMarkup {
-	target := "btn_page_1"
-	if page == 2 {
-		target = "btn_page_2"
-	}
+func GetBackKeyboard() *InlineKeyboardMarkup {
 	return &InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{
-				{Text: "⬅️ Kembali ke Menu", CallbackData: target},
+				{Text: "« Menu Utama", CallbackData: "btn_page_1"},
+				{Text: "« Balik ke Menu 2", CallbackData: "btn_page_2"},
+			},
+		},
+	}
+}
+
+func GetPublicKeyboard() *InlineKeyboardMarkup {
+	return &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: "⚡ Scan Semua Akun Sekarang", CallbackData: "btn_public_scan"},
+			},
+			{
+				{Text: "👥 Lihat Daftar Akun", CallbackData: "btn_public_accounts"},
+			},
+			{
+				{Text: "« Menu Utama", CallbackData: "btn_page_1"},
+				{Text: "« Balik ke Menu 2", CallbackData: "btn_page_2"},
 			},
 		},
 	}

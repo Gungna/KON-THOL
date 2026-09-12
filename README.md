@@ -5,10 +5,7 @@
 # KON-THOL 👀🐦
 ### "Kawan Otomasi dan Notifikasi untuk E-THOL PENS"
 
-**KON-THOL** adalah bot asisten automasi presensi dan monitoring informasi E-THOL cerdas berbasis Python & Telegram Bot untuk mahasiswa Politeknik TERBAEKKK se-Asia Tenggara. Dirancang untuk mempermudah presensi perkuliahan, memeriksa jadwal harian & mingguan, merekap kehadiran, serta mengakses data portal tanpa hambatan keharusan login berulang kali—terutama saat portal sedang padat diakses.
-
-> [!NOTE]
-> **Efisiensi Beban Jaringan & Server:** Script ini beroperasi menggunakan arsitektur *session reuse*, caching ringan, dan siklus *adaptive multi-tier polling* yang dirancang hemat resource. Proses pemindaian hanya mengirimkan permintaan HTTP berukuran sangat kecil secara berkala, sehingga berjalan efisien tanpa membebani *traffic* ataupun menimbulkan kelambatan pada infrastruktur portal E-THOL PENS.
+**KON-THOL** adalah bot asisten automasi presensi dan monitoring informasi E-THOL cerdas berbasis Python & Telegram Bot untuk mahasiswa Politeknik TERBAEKKK se-Asia Tenggara. Dirancang untuk mempermudah presensi perkuliahan, memeriksa jadwal harian & mingguan, merekap kehadiran, serta mengakses data portal tanpa hambatan keharusan login berulang kali, terutama saat portal sedang padat diakses.
 
 ---
 
@@ -193,3 +190,4 @@ Oleh karena itu, apabila di kemudian hari terdapat script, bot, atau software pe
 > **PERINGATAN KEAMANAN & BATASAN TANGGUNG JAWAB PENGEMBANG:**
 > 1. Berkas kredensial (`credentials.json`, `accounts.json`, password SSO, maupun token bot Telegram) memuat data autentikasi pribadi yang sangat sensitif. **JANGAN PERNAH** membagikan, mengunggah, atau melakukan `git commit / push` berkas-berkas kredensial ke repositori publik atau kepada pihak mana pun.
 > 2. Segala bentuk tindakan, kelalaian, kebocoran akun akibat kecerobohan pengguna, kendala teknis, maupun konsekuensi akademik apa pun yang timbul dari pengoperasian perangkat lunak ini adalah **SEPENUHNYA MENJADI TANGGUNG JAWAB PRIBADI MASING-MASING PENGGUNA**. Creator / pengembang perangkat lunak ini **TIDAK BERTANGGUNG JAWAB ATAS SEGALA BENTUK KONSEKUENSI MAUPUN DAMPAK APA PUN** yang dialami oleh pengguna maupun pihak lain akibat penggunaan script ini.
+> 3. Script ini beroperasi menggunakan arsitektur *session reuse*, caching ringan, dan siklus *adaptive multi-tier polling* yang dirancang hemat resource. Proses pemindaian hanya mengirimkan permintaan HTTP berukuran sangat kecil secara berkala, sehingga berjalan efisien tanpa membebani *traffic* ataupun menimbulkan kelambatan pada infrastruktur portal E-THOL PENS.

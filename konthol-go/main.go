@@ -23,12 +23,16 @@ type BotState struct {
 	CredPath       string
 	AccPath        string
 	StatePath      string
+	BannerPaths    []string
 	Creds          *config.Credentials
 	Accounts       *config.AccountsConfig
 	PrimaryClient  *client.EtholClient
 	TgBot          *telegram.TelegramBot
 	CooldownActive bool
+	CooldownDate   string
+	ForceSiaga     bool
 	AttendedKeys   map[string]bool
+	ActivityLogs   []string
 	LastScanTime   time.Time
 	StartTime      time.Time
 	mu             sync.RWMutex
@@ -48,6 +52,12 @@ func main() {
 	state.AccPath = *accFlag
 	state.StatePath = *stateFlag
 	state.AttendedKeys = make(map[string]bool)
+	state.BannerPaths = []string{
+		"banner.jpg",
+		"assets/banner.jpg",
+		"/opt/ethol-autopresence/banner.jpg",
+		"/opt/konthol-go/banner.jpg",
+	}
 
 	loadAttendedKeys()
 
@@ -74,8 +84,10 @@ func main() {
 	// 3. Login CAS SSO
 	ok, err := etholCl.LoginCAS()
 	if !ok || err != nil {
-		log.Printf("[WARN] Login CAS awal terkendala: %v (Akan dicoba ulang di background)", err)
+		log.Printf("[WARN] Login CAS awal terkendala: %v (Akan dicoba ulang)", err)
+		addLog(fmt.Sprintf("Login CAS terkendala: %v", err))
 	} else {
+		addLog("Login CAS SSO berhasil")
 		if err := etholCl.UpdateCache(true); err != nil {
 			log.Printf("[WARN] Inisialisasi cache gagal: %v", err)
 		}
@@ -91,8 +103,8 @@ func main() {
 		stopChan := make(chan struct{})
 		go tg.StartPolling(stopChan)
 
-		// Notifikasi startup ke Telegram
-		sendStartupNotification()
+		// Kirim tampilan menu utama awal
+		sendWelcomeMenu()
 	}
 
 	// 5. Start Polling Engine Goroutine
@@ -101,7 +113,6 @@ func main() {
 
 	log.Println("[SYSTEM] KON-THOL aktif penuh. Menunggu sinyal interrupt...")
 
-	// Graceful Shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
@@ -119,6 +130,20 @@ func getWIBNow() time.Time {
 		return time.Now().UTC().Add(7 * time.Hour)
 	}
 	return time.Now().In(loc)
+}
+
+func getWIBStr() string {
+	return getWIBNow().Format("02-01-2006 15:04:05 WIB")
+}
+
+func addLog(msg string) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	entry := fmt.Sprintf("[%s] %s", getWIBNow().Format("15:04:05"), msg)
+	state.ActivityLogs = append(state.ActivityLogs, entry)
+	if len(state.ActivityLogs) > 20 {
+		state.ActivityLogs = state.ActivityLogs[len(state.ActivityLogs)-20:]
+	}
 }
 
 func loadAttendedKeys() {
@@ -151,25 +176,6 @@ func saveAttendedKeys() {
 	}
 }
 
-func sendStartupNotification() {
-	if state.TgBot == nil || state.Creds.TelegramChatID == "" {
-		return
-	}
-	userName := "Mahasiswa"
-	if state.PrimaryClient.UserInfo != nil {
-		userName = state.PrimaryClient.UserInfo.Nama
-	}
-
-	wib := getWIBNow().Format("15:04:05 WIB")
-	msg := fmt.Sprintf("<b>KON-THOL Engine (Go Edition) Aktif</b>\n\n"+
-		"Nama: <code>%s</code>\n"+
-		"Mode: <code>Siaga Penuh</code>\n"+
-		"Waktu Mulai: <code>%s</code>\n\n"+
-		"Bot siap mengawal presensi dan jadwal kuliah.", userName, wib)
-
-	_, _ = state.TgBot.SendMessage(state.Creds.TelegramChatID, msg, telegram.GetMainKeyboard(1))
-}
-
 func runSchedulerLoop(stopChan <-chan struct{}) {
 	for {
 		select {
@@ -180,39 +186,42 @@ func runSchedulerLoop(stopChan <-chan struct{}) {
 			time.Sleep(interval)
 
 			state.mu.RLock()
-			isCooldown := state.CooldownActive
+			isCooldown := isCooldownActiveToday()
 			state.mu.RUnlock()
 
 			if isCooldown {
 				continue
 			}
 
-			// Jalankan scan presensi otomatis
 			scanActiveAttendance(false)
 		}
 	}
+}
+
+func isCooldownActiveToday() bool {
+	if !state.CooldownActive {
+		return false
+	}
+	today := getWIBNow().Format("2006-01-02")
+	return state.CooldownDate == today
 }
 
 func getNextInterval() time.Duration {
 	now := getWIBNow()
 	hour := now.Hour()
 	minute := now.Minute()
-	timeVal := hour*60 + minute
+	timeVal := float64(hour) + float64(minute)/60.0
 
-	// 00:00 - 05:30 : Istirahat Malam (15 menit)
-	if timeVal < 330 {
+	// 21:00 - 04:00 : Istirahat Malam (15 menit)
+	if hour >= 21 || hour < 4 {
 		return 15 * time.Minute
 	}
-	// 05:30 - 07:00 : Siaga Subuh (5 menit)
-	if timeVal < 420 {
+	// 04:00 - 06:30 : Siaga Subuh (5 menit)
+	if timeVal >= 4.0 && timeVal < 6.5 {
 		return 5 * time.Minute
 	}
-	// 07:00 - 18:30 : Siaga Penuh Kuliah (35 detik)
-	if timeVal < 1110 {
-		return 35 * time.Second
-	}
-	// 18:30 - 23:59 : Siaga Malam (5 menit)
-	return 5 * time.Minute
+	// Siaga Penuh Kuliah (35 detik)
+	return 35 * time.Second
 }
 
 func scanActiveAttendance(manual bool) string {
@@ -227,7 +236,7 @@ func scanActiveAttendance(manual bool) string {
 	}
 
 	if len(courses) == 0 {
-		return "Daftar mata kuliah belum tersedia."
+		return "Data mata kuliah belum tersedia."
 	}
 
 	var results []string
@@ -246,11 +255,10 @@ func scanActiveAttendance(manual bool) string {
 
 		cName := c.CourseName()
 		if alreadyAttended {
-			results = append(results, fmt.Sprintf("• %s: Sudah tercatat", cName))
+			results = append(results, fmt.Sprintf("• %s: Presensi telah tercatat.", cName))
 			continue
 		}
 
-		// Submit presensi
 		ok, pesan, err := state.PrimaryClient.SubmitAttendance(c.Nomor, c.JenisSchema, key, c.KuliahAsal)
 		if err == nil && ok {
 			state.mu.Lock()
@@ -259,21 +267,22 @@ func scanActiveAttendance(manual bool) string {
 			saveAttendedKeys()
 
 			results = append(results, fmt.Sprintf("• %s: Berhasil diabsenkan (%s)", cName, pesan))
+			addLog(fmt.Sprintf("PRESENSI SUKSES: %s (%s)", cName, key))
 			notifyAttendanceSuccess(cName, c.Dosen, key, pesan)
 		} else {
 			results = append(results, fmt.Sprintf("• %s: Gagal submit (%s)", cName, pesan))
+			addLog(fmt.Sprintf("PRESENSI GAGAL: %s (%s)", cName, pesan))
 		}
 	}
 
+	nowStr := getWIBStr()
 	if manual {
-		wib := getWIBNow().Format("15:04:05 WIB")
 		if foundOpen == 0 {
 			return fmt.Sprintf("<b>HASIL PEMINDAIAN PRESENSI</b>\n"+
-				"Waktu: <code>%s</code>\n\n"+
-				"Tidak ada presensi yang sedang dibuka dosen pada %d mata kuliah terdaftar.", wib, len(courses))
+				"<code>Waktu: %s</code>\n\n"+
+				"Tidak ada presensi yang sedang dibuka dosen pada %d mata kuliah terdaftar.", nowStr, len(courses))
 		}
-		return fmt.Sprintf("<b>HASIL PEMINDAIAN PRESENSI</b>\n"+
-			"Waktu: <code>%s</code>\n\n%s", wib, strings.Join(results, "\n"))
+		return fmt.Sprintf("<b>HASIL PEMINDAIAN PRESENSI:</b>\n\n%s", strings.Join(results, "\n"))
 	}
 
 	return strings.Join(results, "\n")
@@ -283,7 +292,7 @@ func notifyAttendanceSuccess(course, dosen, key, pesan string) {
 	if state.TgBot == nil || state.Creds.TelegramChatID == "" {
 		return
 	}
-	wib := getWIBNow().Format("15:04:05 WIB")
+	nowStr := getWIBStr()
 	msg := fmt.Sprintf("<b>PRESENSI BERHASIL TERCATAT</b>\n"+
 		"<code>"+
 		"Mata Kuliah : %s\n"+
@@ -291,296 +300,545 @@ func notifyAttendanceSuccess(course, dosen, key, pesan string) {
 		"Kode Key    : %s\n"+
 		"Waktu       : %s\n"+
 		"Status      : %s"+
-		"</code>", course, dosen, key, wib, pesan)
+		"</code>", course, dosen, key, nowStr, pesan)
 
 	_, _ = state.TgBot.SendMessage(state.Creds.TelegramChatID, msg, nil)
 }
 
+// UI Formatters 100% Identical to Python V2
+func getStatusBox() string {
+	nowWib := getWIBNow()
+	nowTimeStr := nowWib.Format("15:04")
+
+	state.mu.RLock()
+	userInfo := state.PrimaryClient.UserInfo
+	isCooldown := isCooldownActiveToday()
+	forceSiaga := state.ForceSiaga
+	schedules := state.PrimaryClient.GetSchedules()
+	state.mu.RUnlock()
+
+	// 1. Server Terputus
+	if userInfo == nil {
+		return "<code>┌─ STATUS ────────────\n" +
+			"│ 🔴 Server Terputus\n" +
+			"│ ⚠️ Butuh /relogin\n" +
+			"└─────────────────────</code>"
+	}
+
+	// 2. Cooldown Aktif
+	if isCooldown {
+		return "<code>┌─ STATUS ────────────\n" +
+			"│ 🟡 Mode Cooldown\n" +
+			"│ 💤 Jeda s/d 00:00 WIB\n" +
+			"└─────────────────────</code>"
+	}
+
+	// 3. Kuliah Berlangsung
+	dayNames := map[time.Weekday]string{
+		time.Monday: "senin", time.Tuesday: "selasa", time.Wednesday: "rabu",
+		time.Thursday: "kamis", time.Friday: "jumat", time.Saturday: "sabtu", time.Sunday: "minggu",
+	}
+	todayDay := dayNames[nowWib.Weekday()]
+
+	for _, item := range schedules {
+		h := strings.ToLower(strings.TrimSpace(item.Hari))
+		if h == todayDay {
+			jStart := item.JamAwal
+			jEnd := item.JamAkhir
+			if jStart != "" && jEnd != "" && jStart <= nowTimeStr && nowTimeStr <= jEnd {
+				mkNama := item.CourseName()
+				mkShort := mkNama
+				if len(mkShort) > 15 {
+					mkShort = mkShort[:13] + ".."
+				}
+				return fmt.Sprintf("<code>┌─ STATUS ────────────\n"+
+					"│ 🔵 Kuliah: %s\n"+
+					"│ ⚡ Siaga Presensi\n"+
+					"└─────────────────────</code>", mkShort)
+			}
+		}
+	}
+
+	// 4. Force Siaga
+	if forceSiaga {
+		return fmt.Sprintf("<code>┌─ STATUS ────────────\n"+
+			"│ 🟢 Siaga Penuh\n"+
+			"│ 🕒 %s WIB (Override)\n"+
+			"└─────────────────────</code>", nowTimeStr)
+	}
+
+	// 5. Waktu Malam & Subuh
+	curHour := nowWib.Hour()
+	curMin := nowWib.Minute()
+	timeVal := float64(curHour) + float64(curMin)/60.0
+
+	if curHour >= 21 || curHour < 4 {
+		return fmt.Sprintf("<code>┌─ STATUS ────────────\n"+
+			"│ 💤 Istirahat Malam\n"+
+			"│ 🕒 %s (Standby)\n"+
+			"└─────────────────────</code>", nowTimeStr)
+	}
+	if timeVal >= 4.0 && timeVal < 6.5 {
+		return fmt.Sprintf("<code>┌─ STATUS ────────────\n"+
+			"│ 🌅 Siaga Subuh\n"+
+			"│ 🕒 %s (Standby)\n"+
+			"└─────────────────────</code>", nowTimeStr)
+	}
+
+	// 6. Aktif Normal
+	return fmt.Sprintf("<code>┌─ STATUS ────────────\n"+
+		"│ 🟢 Aktif & Listening\n"+
+		"│ 🕒 %s WIB (SSO OK)\n"+
+		"└─────────────────────</code>", nowTimeStr)
+}
+
+func getWelcomeText() string {
+	box := getStatusBox()
+	return fmt.Sprintf("<b>KON-THOL ASSISTANT</b>\n"+
+		"<i>Kawan Otomasi dan Notifikasi E-THOL</i>\n\n"+
+		"%s\n\n"+
+		"✦ <b>Creator : Gungna</b>\n\n"+
+		"Silakan pilih menu di bawah ini:", box)
+}
+
+func sendWelcomeMenu() {
+	if state.TgBot == nil || state.Creds.TelegramChatID == "" {
+		return
+	}
+	text := getWelcomeText()
+	kb := telegram.GetMainKeyboard(1, isCooldownActiveToday())
+	state.TgBot.SendMenu(state.Creds.TelegramChatID, text, kb, state.BannerPaths)
+}
+
+func formatStatusText() string {
+	state.mu.RLock()
+	userInfo := state.PrimaryClient.UserInfo
+	isCooldown := isCooldownActiveToday()
+	forceSiaga := state.ForceSiaga
+	state.mu.RUnlock()
+
+	nama := "Belum login"
+	nrp := "-"
+	if userInfo != nil {
+		nama = userInfo.Nama
+		nrp = userInfo.NipNrp
+	}
+	nowStr := getWIBStr()
+	lastAuth := state.PrimaryClient.LastAuthTime.Format("02-01-2006 15:04:05 WIB")
+	if state.PrimaryClient.LastAuthTime.IsZero() {
+		lastAuth = nowStr
+	}
+
+	nowWib := getWIBNow()
+	timeVal := float64(nowWib.Hour()) + float64(nowWib.Minute())/60.0
+
+	var scannerStatus, scannerSub, jadwalRelogin, aktivitas string
+
+	if isCooldown {
+		scannerStatus = fmt.Sprintf("🟡 Cooldown (%s)", state.CooldownDate)
+		scannerSub = "💤 Jeda s/d 00:00 WIB"
+		jadwalRelogin = "Auto re-login esok hari (00:00 WIB)"
+		aktivitas = "Istirahat (monitoring agresif jeda)"
+	} else if forceSiaga {
+		scannerStatus = "🟢 Siaga Penuh (Override)"
+		scannerSub = "• Mode Malam di-bypass (Siaga Agresif)"
+		jadwalRelogin = "Pengecekan sesi & re-login tiap 10 menit"
+		aktivitas = "Siaga penuh memantau perkuliahan malam"
+	} else if timeVal >= 21.5 || timeVal < 4.0 {
+		scannerStatus = "💤 Istirahat Malam"
+		scannerSub = "• Jeda malam (dosen offline)"
+		jadwalRelogin = "Siaga subuh (04:00 WIB)"
+		aktivitas = "Standby malam (gunakan /resume jika ada kuliah)"
+	} else if timeVal >= 4.0 && timeVal < 6.5 {
+		scannerStatus = "🌅 Siaga Subuh"
+		scannerSub = "• Memantau persiapan kuliah pagi"
+		jadwalRelogin = "Pengecekan sesi & re-login tiap 10 menit"
+		aktivitas = "Siaga subuh menyambut jadwal kuliah"
+	} else {
+		scannerStatus = "🟢 Siaga Penuh"
+		activeClean := "Tidak ada kelas"
+		scannerSub = fmt.Sprintf("• %s", activeClean)
+		jadwalRelogin = "Pengecekan sesi & re-login tiap 10 menit"
+		aktivitas = "Siaga memantau presensi & jadwal"
+	}
+
+	return fmt.Sprintf("<b>┌─ DATA MAHASISWA ─────────────────</b>\n"+
+		"│ Mahasiswa      : %s\n"+
+		"│ NRP            : <code>%s</code>\n"+
+		"│ Waktu Server   : %s\n"+
+		"<b>├─ SESI LOGIN & RE-LOGIN ───────────</b>\n"+
+		"│ Sesi Login     : 🟢 Terhubung (Aktif)\n"+
+		"│ Terakhir Login : <code>%s</code>\n"+
+		"│ Jadwal Re-login: %s\n"+
+		"<b>├─ OPERASIONAL SCANNER ────────────</b>\n"+
+		"│ Status Scanner : %s\n"+
+		"│                  %s\n"+
+		"│ Aktivitas      : %s\n"+
+		"<b>└──────────────────────────────────</b>",
+		nama, nrp, nowStr, lastAuth, jadwalRelogin, scannerStatus, scannerSub, aktivitas)
+}
+
+func formatJadwalText() string {
+	_ = state.PrimaryClient.UpdateCache(true)
+	schedules := state.PrimaryClient.GetSchedules()
+	if len(schedules) == 0 {
+		return "Data jadwal perkuliahan belum tersedia."
+	}
+
+	nowWib := getWIBNow()
+	dayMap := map[time.Weekday]string{
+		time.Monday: "senin", time.Tuesday: "selasa", time.Wednesday: "rabu",
+		time.Thursday: "kamis", time.Friday: "jumat", time.Saturday: "sabtu", time.Sunday: "minggu",
+	}
+	todayDayClean := dayMap[nowWib.Weekday()]
+
+	cleanDay := func(d string) string {
+		return strings.ToLower(strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(d, "'", ""), "`", "")))
+	}
+
+	dayOrder := map[string]int{
+		"senin": 1, "selasa": 2, "rabu": 3, "kamis": 4, "jumat": 5, "sabtu": 6, "minggu": 7,
+	}
+
+	sortedJadwal := make([]client.ScheduleItem, len(schedules))
+	copy(sortedJadwal, schedules)
+
+	sort.Slice(sortedJadwal, func(i, j int) bool {
+		valI := sortedJadwal[i].NomorHari
+		if valI <= 0 {
+			valI = dayOrder[cleanDay(sortedJadwal[i].Hari)]
+			if valI == 0 {
+				valI = 99
+			}
+		}
+		valJ := sortedJadwal[j].NomorHari
+		if valJ <= 0 {
+			valJ = dayOrder[cleanDay(sortedJadwal[j].Hari)]
+			if valJ == 0 {
+				valJ = 99
+			}
+		}
+		if valI != valJ {
+			return valI < valJ
+		}
+		return sortedJadwal[i].JamAwal < sortedJadwal[j].JamAwal
+	})
+
+	tahun := time.Now().Year()
+	sem := 1
+	if state.PrimaryClient.EtholConfig != nil {
+		tahun = state.PrimaryClient.EtholConfig.TahunAktif
+		sem = state.PrimaryClient.EtholConfig.SemesterAktif
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("<b>JADWAL KULIAH (Semester %d/%d):</b>\n", sem, tahun))
+
+	currDay := ""
+	for _, item := range sortedJadwal {
+		dRaw := strings.TrimSpace(item.Hari)
+		if dRaw == "" || strings.EqualFold(dRaw, "none") {
+			dRaw = "Lainnya"
+		}
+		dClean := cleanDay(dRaw)
+
+		if dRaw != currDay {
+			currDay = dRaw
+			if dClean == todayDayClean {
+				sb.WriteString(fmt.Sprintf("\n🗓️ <b>[%s (HARI INI)]</b>\n", strings.ToUpper(currDay)))
+			} else {
+				sb.WriteString(fmt.Sprintf("\n🗓️ <b>[%s]</b>\n", strings.ToUpper(currDay)))
+			}
+		}
+
+		jamAwal := item.JamAwal
+		jamAkhir := item.JamAkhir
+		jamStr := fmt.Sprintf("%s - %s", jamAwal, jamAkhir)
+		if jamAwal == "" || strings.EqualFold(jamAwal, "none") || jamAwal == "-" {
+			jamStr = "Fleksibel / Mandiri"
+		}
+
+		mk := item.CourseName()
+		ruang := item.Ruang
+		if ruang == "" {
+			ruang = "Online"
+		}
+
+		sb.WriteString(fmt.Sprintf("• <b>%s</b>\n", mk))
+		sb.WriteString(fmt.Sprintf("  ⏰ <code>%s</code> • 📍 %s\n", jamStr, ruang))
+	}
+
+	return sb.String()
+}
+
+func formatRekapDetail() string {
+	todayStr := getWIBNow().Format("02-01-2006")
+	stats, err := state.PrimaryClient.GetAttendanceStatistics(todayStr)
+	if err != nil || stats == nil {
+		return "Gagal memuat rekapitulasi kehadiran dari server ETHOL."
+	}
+
+	nowWib := getWIBNow()
+	dayMap := map[time.Weekday]string{
+		time.Monday: "senin", time.Tuesday: "selasa", time.Wednesday: "rabu",
+		time.Thursday: "kamis", time.Friday: "jumat", time.Saturday: "sabtu", time.Sunday: "minggu",
+	}
+	todayDayClean := dayMap[nowWib.Weekday()]
+
+	cleanDay := func(d string) string {
+		return strings.ToLower(strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(d, "'", ""), "`", "")))
+	}
+
+	schedules := state.PrimaryClient.GetSchedules()
+	coursesScheduledToday := make(map[string]bool)
+	courseScheduledDays := make(map[string]string)
+
+	for _, s := range schedules {
+		hClean := cleanDay(s.Hari)
+		mkName := s.CourseName()
+		if hClean != "" && mkName != "" {
+			courseScheduledDays[mkName] = s.Hari
+		}
+		if hClean == todayDayClean {
+			coursesScheduledToday[mkName] = true
+			coursesScheduledToday[fmt.Sprintf("%d", s.Kuliah)] = true
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>REKAPITULASI KEHADIRAN RESMI</b>\n\n")
+	sb.WriteString(fmt.Sprintf("• Rata-rata Total : <b>%.1f%%</b>\n", stats.Percentage))
+	sb.WriteString(fmt.Sprintf("• Total Kehadiran : %d dari %d sesi perkuliahan\n", stats.TotalMhsSemester, stats.TotalDosenSemester))
+	sb.WriteString(fmt.Sprintf("• Hadir Hari Ini  : %d sesi tervalidasi hadir\n\n", stats.TotalMhsToday))
+	sb.WriteString("<b>RINCIAN PER MATA KULIAH:</b>\n\n")
+
+	for _, item := range stats.Breakdown {
+		mkName := item.Nama
+		kIDStr := fmt.Sprintf("%d", item.KuliahID)
+		isToday := coursesScheduledToday[mkName] || coursesScheduledToday[kIDStr]
+
+		if isToday {
+			statusSesi := "⚪ <code>[Belum Ada Sesi Dibuka Dosen]</code>"
+			if item.MToday > 0 {
+				statusSesi = fmt.Sprintf("🟢 <code>[Sesi Selesai: Tervalidasi Hadir (%d Sesi)]</code>", item.MToday)
+			} else if item.DToday > 0 {
+				statusSesi = "⚠️ <code>[Sesi Terbuka: Belum Hadir]</code>"
+			}
+
+			sb.WriteString(fmt.Sprintf("• <b>%s</b> (Hari Ini)\n", mkName))
+			sb.WriteString(fmt.Sprintf("  Status Sesi : %s\n", statusSesi))
+			sb.WriteString(fmt.Sprintf("  Total Hadir : %d kali pertemuan dalam semester ini.\n\n", item.Hadir))
+		} else if item.MToday > 0 || item.DToday > 0 {
+			jadwalAsli := courseScheduledDays[mkName]
+			if jadwalAsli == "" {
+				jadwalAsli = "Hari Lain"
+			}
+			statusSesi := fmt.Sprintf("🟠 <code>[Sesi Luar Jadwal: Sesi Terbuka (%s)]</code>", jadwalAsli)
+			if item.MToday > 0 {
+				statusSesi = fmt.Sprintf("🟠 <code>[Sesi Luar Jadwal: Tervalidasi Hadir (%d Sesi • Jadwal: %s)]</code>", item.MToday, jadwalAsli)
+			}
+
+			sb.WriteString(fmt.Sprintf("• <b>%s</b> (Luar Hari)\n", mkName))
+			sb.WriteString(fmt.Sprintf("  Status Sesi : %s\n", statusSesi))
+			sb.WriteString(fmt.Sprintf("  Total Hadir : %d kali pertemuan dalam semester ini.\n\n", item.Hadir))
+		} else {
+			sb.WriteString(fmt.Sprintf("• <b>%s</b>\n", mkName))
+			sb.WriteString(fmt.Sprintf("  Total Hadir : %d kali pertemuan dalam semester ini.\n\n", item.Hadir))
+		}
+	}
+
+	return sb.String()
+}
+
+func formatTugasText() string {
+	tasks, err := state.PrimaryClient.GetPendingTasks()
+	if err != nil || len(tasks) == 0 {
+		return "<b>DAFTAR TUGAS KULIAH</b>\n\n" +
+			"Semua tugas pada semester ini telah dikumpulkan atau tidak ada tugas aktif."
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>DAFTAR TUGAS PENDING (BELUM DIKUMPULKAN):</b>\n\n")
+
+	linksDict := make(map[string]string)
+	for idx, t := range tasks {
+		if t.KuliahID > 0 && linksDict[t.Matkul] == "" {
+			linksDict[t.Matkul] = fmt.Sprintf("https://ethol.pens.ac.id/mahasiswa/matakuliah/%d/tugas", t.KuliahID)
+		}
+		sb.WriteString(fmt.Sprintf("<b>%d. %s</b>\n", idx+1, t.Title))
+		sb.WriteString(fmt.Sprintf("   Mata Kuliah : %s\n", t.Matkul))
+		sb.WriteString(fmt.Sprintf("   Tenggat     : <code>%s</code>\n\n", t.Deadline))
+	}
+
+	if len(linksDict) == 1 {
+		for _, urlTugas := range linksDict {
+			sb.WriteString(fmt.Sprintf("Tautan Web : %s\n", urlTugas))
+		}
+	} else {
+		sb.WriteString("<b>Tautan Web Pengumpulan:</b>\n")
+		for mkName, urlTugas := range linksDict {
+			sb.WriteString(fmt.Sprintf("• %s :\n  %s\n", mkName, urlTugas))
+		}
+	}
+
+	sb.WriteString("\n⚠️ <i>Catatan: Harap pastikan sudah login ke akun ETHOL di browser terlebih dahulu sebelum membuka tautan di atas agar dapat langsung diarahkan ke tugas tersebut.</i>")
+	return sb.String()
+}
+
+func formatHelpText() string {
+	return "<b>PANDUAN PENGGUNAAN KON-THOL</b>\n\n" +
+		"• <b>⚡ Presensi Manual</b>: Memindai portal seketika untuk mengecek & submit kode presensi aktif.\n" +
+		"• <b>📅 Jadwal Kuliah</b>: Melihat jadwal perkuliahan terdaftar per hari.\n" +
+		"• <b>📝 Tugas Pending</b>: Memeriksa tugas kuliah yang belum diserahkan.\n" +
+		"• <b>📊 Rekap Kehadiran</b>: Menghitung persentase dan riwayat presensi resmi.\n" +
+		"• <b>💤 Mode Cooldown</b>: Menjeda polling agresif hingga tengah malam.\n" +
+		"• <b>🔄 Re-login Session</b>: Memperbarui otentikasi login CAS SSO PENS."
+}
+
+func formatLogsText() string {
+	state.mu.RLock()
+	logs := state.ActivityLogs
+	state.mu.RUnlock()
+
+	if len(logs) == 0 {
+		return "<b>LOG AKTIVITAS SISTEM</b>\n\nBelum ada catatan aktivitas baru."
+	}
+	return fmt.Sprintf("<b>LOG AKTIVITAS SISTEM (%d Terakhir)</b>\n\n<code>%s</code>",
+		len(logs), strings.Join(logs, "\n"))
+}
+
+func formatPublicAccounts() string {
+	if state.Accounts == nil || len(state.Accounts.Accounts) == 0 {
+		return "<b>DAFTAR AKUN TERDAFTAR</b>\n\nTidak ada multi-akun pada konfigurasi."
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("<b>DAFTAR AKUN MAHASISWA (%d)</b>\n\n", len(state.Accounts.Accounts)))
+	for i, a := range state.Accounts.Accounts {
+		sb.WriteString(fmt.Sprintf("%d. <b>%s</b>\n   NRP/User: <code>%s</code>\n   WA: <code>%s</code>\n\n",
+			i+1, a.Name, a.Username, a.WATarget))
+	}
+	return sb.String()
+}
+
+// Telegram Command & Action Handlers
 func handleTgCommand(cmd string, chatID int64, msgID int) {
 	cmdLower := strings.ToLower(strings.TrimSpace(cmd))
 	adminChatID, _ := strconv.ParseInt(state.Creds.TelegramChatID, 10, 64)
 
-	// Verifikasi hak akses admin
 	if adminChatID != 0 && chatID != adminChatID {
 		_, _ = state.TgBot.SendMessage(chatID, "Akses ditolak. Bot ini dikhususkan untuk akun terdaftar.", nil)
 		return
 	}
 
 	switch {
-	case cmdLower == "/start" || cmdLower == "/menu":
-		showMainMenu(chatID, 1)
-	case cmdLower == "/status":
+	case cmdLower == "/start" || cmdLower == "/menu" || cmdLower == "help" || cmdLower == "/help":
+		sendWelcomeMenu()
+	case cmdLower == "/status" || cmdLower == "status":
 		txt := formatStatusText()
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(1))
-	case cmdLower == "/scan":
-		state.TgBot.ShowMenu(chatID, "Sedang memindai presensi aktif di portal ETHOL...", nil)
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+	case cmdLower == "/scan" || cmdLower == "scan":
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang memindai presensi aktif di seluruh mata kuliah...</i>", nil)
 		res := scanActiveAttendance(true)
-		state.TgBot.ShowMenu(chatID, res, telegram.GetBackKeyboard(1))
-	case cmdLower == "/jadwal":
-		txt := formatTodaySchedule()
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(1))
-	case cmdLower == "/jadwal_minggu":
-		txt := formatFullSchedule()
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(1))
-	case cmdLower == "/rekap":
-		txt := formatCoursesList()
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(1))
-	case cmdLower == "/cooldown":
+		state.TgBot.ShowContentCard(chatID, res, telegram.GetBackKeyboard())
+	case cmdLower == "/jadwal" || cmdLower == "jadwal":
+		txt := formatJadwalText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+	case cmdLower == "/rekap" || cmdLower == "rekap":
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang menghitung rekapitulasi kehadiran per mata kuliah...</i>", nil)
+		txt := formatRekapDetail()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+	case cmdLower == "/tugas" || cmdLower == "tugas":
+		txt := formatTugasText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+	case cmdLower == "/cooldown" || cmdLower == "/istirahat":
 		state.mu.Lock()
 		state.CooldownActive = true
+		state.CooldownDate = getWIBNow().Format("2006-01-02")
 		state.mu.Unlock()
-		state.TgBot.ShowMenu(chatID, "Mode Cooldown diaktifkan. Polling dinonaktifkan sementara.", telegram.GetBackKeyboard(1))
-	case cmdLower == "/resume":
+		addLog("Mode cooldown diaktifkan")
+		sendWelcomeMenu()
+	case cmdLower == "/resume" || cmdLower == "resume":
 		state.mu.Lock()
 		state.CooldownActive = false
+		state.ForceSiaga = true
 		state.mu.Unlock()
-		state.TgBot.ShowMenu(chatID, "Mode Siaga Penuh diaktifkan kembali.", telegram.GetBackKeyboard(1))
+		addLog("Mode siaga penuh diaktifkan")
+		sendWelcomeMenu()
 	default:
-		showMainMenu(chatID, 1)
+		sendWelcomeMenu()
 	}
 }
 
 func handleTgAction(action string, chatID int64, msgID int, queryID string) {
 	switch action {
 	case "btn_page_1":
-		showMainMenu(chatID, 1)
+		sendWelcomeMenu()
 	case "btn_page_2":
-		showMainMenu(chatID, 2)
-	case "btn_status":
-		txt := formatStatusText()
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(1))
+		text := getWelcomeText()
+		kb := telegram.GetMainKeyboard(2, isCooldownActiveToday())
+		state.TgBot.SendMenu(chatID, text, kb, state.BannerPaths)
 	case "btn_scan":
-		state.TgBot.ShowMenu(chatID, "Sedang memindai presensi aktif di portal ETHOL...", nil)
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang memindai presensi aktif di seluruh mata kuliah...</i>", nil)
 		res := scanActiveAttendance(true)
-		state.TgBot.ShowMenu(chatID, res, telegram.GetBackKeyboard(1))
-	case "btn_jadwal_hari_ini":
-		txt := formatTodaySchedule()
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(1))
-	case "btn_jadwal_lengkap":
-		txt := formatFullSchedule()
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(1))
-	case "btn_rekap":
-		txt := formatCoursesList()
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(1))
-	case "btn_notif":
-		txt := "Notifikasi ETHOL: Tidak ada notifikasi baru yang belum dibaca."
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(1))
-	case "btn_courses":
-		txt := formatCoursesList()
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(2))
+		state.TgBot.ShowContentCard(chatID, res, telegram.GetBackKeyboard())
+	case "btn_jadwal":
+		txt := formatJadwalText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
 	case "btn_tugas":
-		txt := "Modul Tugas: Semua tugas tercatat telah diserahkan atau tidak ada tugas mendekati deadline."
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(2))
+		txt := formatTugasText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+	case "btn_rekap":
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang menghitung rekapitulasi kehadiran per mata kuliah...</i>", nil)
+		txt := formatRekapDetail()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+	case "btn_log":
+		txt := formatLogsText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
 	case "btn_cooldown":
 		state.mu.Lock()
 		state.CooldownActive = true
+		state.CooldownDate = getWIBNow().Format("2006-01-02")
 		state.mu.Unlock()
-		state.TgBot.ShowMenu(chatID, "Mode Cooldown diaktifkan.", telegram.GetBackKeyboard(2))
+		addLog("Mode cooldown diaktifkan")
+		sendWelcomeMenu()
 	case "btn_resume":
 		state.mu.Lock()
 		state.CooldownActive = false
+		state.ForceSiaga = true
 		state.mu.Unlock()
-		state.TgBot.ShowMenu(chatID, "Mode Siaga Penuh diaktifkan kembali.", telegram.GetBackKeyboard(2))
-	case "btn_accounts":
-		txt := formatAccountsList()
-		state.TgBot.ShowMenu(chatID, txt, telegram.GetBackKeyboard(2))
+		addLog("Mode siaga penuh diaktifkan")
+		sendWelcomeMenu()
+	case "btn_notif":
+		count, lines, _ := state.PrimaryClient.GetUnreadNotifications()
+		if count == 0 {
+			state.TgBot.ShowContentCard(chatID, "<b>NOTIFIKASI ETHOL</b>\n\nTidak ada notifikasi baru yang belum dibaca.", telegram.GetBackKeyboard())
+		} else {
+			state.TgBot.ShowContentCard(chatID, fmt.Sprintf("<b>NOTIFIKASI ETHOL (%d Belum Dibaca)</b>\n\n%s", count, strings.Join(lines, "\n")), telegram.GetBackKeyboard())
+		}
+	case "btn_status":
+		txt := formatStatusText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
 	case "btn_relogin":
-		state.TgBot.ShowMenu(chatID, "Memperbarui sesi login CAS SSO...", nil)
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang merefresh otentikasi login ETHOL...</i>", nil)
 		ok, err := state.PrimaryClient.LoginCAS()
 		if ok {
 			_ = state.PrimaryClient.UpdateCache(true)
-			state.TgBot.ShowMenu(chatID, "Sesi login CAS berhasil disegarkan dan cache diperbarui.", telegram.GetBackKeyboard(2))
+			addLog("Sesi login disegarkan ulang")
+			state.TgBot.ShowContentCard(chatID, "✅ <b>SESI DIPERBARUI</b>\nOtentikasi login dan sinkronisasi data kuliah berhasil disegarkan.", telegram.GetBackKeyboard())
 		} else {
-			state.TgBot.ShowMenu(chatID, fmt.Sprintf("Gagal menyegarkan sesi: %v", err), telegram.GetBackKeyboard(2))
+			state.TgBot.ShowContentCard(chatID, fmt.Sprintf("❌ <b>GAGAL REFRESH SESI</b>\n%v", err), telegram.GetBackKeyboard())
 		}
+	case "btn_konthol_public":
+		state.TgBot.ShowContentCard(chatID, "<b>MODUL KON-THOL PUBLIC EDITION</b>\n\nKelola pemindaian serentak dan daftar akun mahasiswa terdaftar.", telegram.GetPublicKeyboard())
+	case "btn_help":
+		txt := formatHelpText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+	case "btn_public_scan":
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang menjalankan siklus scan serentak seluruh akun mahasiswa...</i>", telegram.GetPublicKeyboard())
+		res := scanActiveAttendance(true)
+		state.TgBot.ShowContentCard(chatID, res, telegram.GetPublicKeyboard())
+	case "btn_public_accounts":
+		txt := formatPublicAccounts()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetPublicKeyboard())
 	}
-}
-
-func showMainMenu(chatID int64, page int) {
-	statusBox := getStatusSummaryBox()
-	text := fmt.Sprintf("<b>KON-THOL ASSISTANT</b>\n"+
-		"<i>Kawan Otomasi dan Notifikasi E-THOL (Go Engine)</i>\n\n"+
-		"%s\n\n"+
-		"Silakan pilih menu di bawah:", statusBox)
-
-	state.TgBot.ShowMenu(chatID, text, telegram.GetMainKeyboard(page))
-}
-
-func getStatusSummaryBox() string {
-	state.mu.RLock()
-	cooldown := state.CooldownActive
-	lastScan := state.LastScanTime
-	state.mu.RUnlock()
-
-	mode := "🟢 Siaga Penuh"
-	if cooldown {
-		mode = "⏸️ Cooldown"
-	}
-
-	scanStr := "Belum scan"
-	if !lastScan.IsZero() {
-		scanStr = lastScan.Format("15:04:05 WIB")
-	}
-
-	userName := "Mahasiswa"
-	nrp := "-"
-	if state.PrimaryClient.UserInfo != nil {
-		userName = state.PrimaryClient.UserInfo.Nama
-		nrp = state.PrimaryClient.UserInfo.NipNrp
-	}
-
-	return fmt.Sprintf("<code>"+
-		"Status : %s\n"+
-		"Akun   : %s (%s)\n"+
-		"Scan   : %s"+
-		"</code>", mode, userName, nrp, scanStr)
-}
-
-func formatStatusText() string {
-	uptime := time.Since(state.StartTime).Round(time.Second)
-	coursesCount := len(state.PrimaryClient.GetCourses())
-	schedulesCount := len(state.PrimaryClient.GetSchedules())
-
-	state.mu.RLock()
-	attendedCount := len(state.AttendedKeys)
-	isCooldown := state.CooldownActive
-	state.mu.RUnlock()
-
-	mode := "Siaga Penuh (Otomatis)"
-	if isCooldown {
-		mode = "Cooldown (Diistirahatkan)"
-	}
-
-	return fmt.Sprintf("<b>STATUS SISTEM KON-THOL</b>\n\n"+
-		"• Versi Mesin: <code>Go 1.24 Native Binary</code>\n"+
-		"• Uptime: <code>%s</code>\n"+
-		"• Mode Operasi: <code>%s</code>\n"+
-		"• Mata Kuliah Dimonitor: <code>%d</code>\n"+
-		"• Jadwal Kuliah: <code>%d</code>\n"+
-		"• Total Presensi Tercatat: <code>%d</code>\n"+
-		"• Penggunaan Memori: <code>~8 MB RSS</code>",
-		uptime.String(), mode, coursesCount, schedulesCount, attendedCount)
-}
-
-func formatTodaySchedule() string {
-	schedules := state.PrimaryClient.GetSchedules()
-	if len(schedules) == 0 {
-		return "Tidak ada data jadwal kuliah tersedia."
-	}
-
-	dayMap := map[time.Weekday]string{
-		time.Monday:    "Senin",
-		time.Tuesday:   "Selasa",
-		time.Wednesday: "Rabu",
-		time.Thursday:  "Kamis",
-		time.Friday:    "Jumat",
-		time.Saturday:  "Sabtu",
-		time.Sunday:    "Minggu",
-	}
-	todayName := dayMap[getWIBNow().Weekday()]
-
-	var todayItems []client.ScheduleItem
-	for _, s := range schedules {
-		if strings.EqualFold(strings.TrimSpace(s.Hari), todayName) {
-			todayItems = append(todayItems, s)
-		}
-	}
-
-	if len(todayItems) == 0 {
-		return fmt.Sprintf("<b>JADWAL HARI INI (%s)</b>\n\nTidak ada perkuliahan untuk hari ini.", todayName)
-	}
-
-	sort.Slice(todayItems, func(i, j int) bool {
-		return todayItems[i].JamMulai < todayItems[j].JamMulai
-	})
-
-	var lines []string
-	lines = append(lines, fmt.Sprintf("<b>JADWAL HARI INI (%s)</b>\n", todayName))
-
-	for i, item := range todayItems {
-		name := item.Dosen
-		if m, ok := item.NamaMatakuliah.(map[string]interface{}); ok {
-			if n, ok := m["nama"].(string); ok {
-				name = n
-			}
-		} else if m, ok := item.Matakuliah.(map[string]interface{}); ok {
-			if n, ok := m["nama"].(string); ok {
-				name = n
-			}
-		}
-
-		lines = append(lines, fmt.Sprintf("%d. <b>%s</b>\n   Waktu : <code>%s - %s</code>\n   Ruang : <code>%s</code>\n   Dosen : %s",
-			i+1, name, item.JamMulai, item.JamSelesai, item.Ruang, item.Dosen))
-	}
-
-	return strings.Join(lines, "\n\n")
-}
-
-func formatFullSchedule() string {
-	schedules := state.PrimaryClient.GetSchedules()
-	if len(schedules) == 0 {
-		return "Tidak ada data jadwal kuliah mingguan tersedia."
-	}
-
-	daysOrder := []string{"Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"}
-	grouped := make(map[string][]client.ScheduleItem)
-
-	for _, s := range schedules {
-		h := strings.Title(strings.ToLower(strings.TrimSpace(s.Hari)))
-		grouped[h] = append(grouped[h], s)
-	}
-
-	var sb strings.Builder
-	sb.WriteString("<b>JADWAL PERKULIAHAN LENGKAP</b>\n\n")
-
-	for _, d := range daysOrder {
-		items := grouped[d]
-		if len(items) == 0 {
-			continue
-		}
-		sb.WriteString(fmt.Sprintf("📅 <b>%s</b>\n", strings.ToUpper(d)))
-		for _, item := range items {
-			name := item.Dosen
-			if m, ok := item.NamaMatakuliah.(map[string]interface{}); ok {
-				if n, ok := m["nama"].(string); ok {
-					name = n
-				}
-			}
-			sb.WriteString(fmt.Sprintf("• <code>%s-%s</code> %s (%s)\n", item.JamMulai, item.JamSelesai, name, item.Ruang))
-		}
-		sb.WriteString("\n")
-	}
-
-	return sb.String()
-}
-
-func formatCoursesList() string {
-	courses := state.PrimaryClient.GetCourses()
-	if len(courses) == 0 {
-		return "Daftar mata kuliah belum tersedia."
-	}
-
-	var lines []string
-	lines = append(lines, fmt.Sprintf("<b>DAFTAR MATA KULIAH TERDAFTAR (%d)</b>\n", len(courses)))
-
-	for i, c := range courses {
-		lines = append(lines, fmt.Sprintf("%d. <b>%s</b>\n   Dosen: %s", i+1, c.CourseName(), c.Dosen))
-	}
-
-	return strings.Join(lines, "\n\n")
-}
-
-func formatAccountsList() string {
-	if state.Accounts == nil || len(state.Accounts.Accounts) == 0 {
-		return "Tidak ada multi-akun yang terkonfigurasi pada accounts.json."
-	}
-
-	var lines []string
-	lines = append(lines, fmt.Sprintf("<b>MULTI-AKUN MAHASISWA (%d)</b>\n", len(state.Accounts.Accounts)))
-
-	for i, a := range state.Accounts.Accounts {
-		lines = append(lines, fmt.Sprintf("%d. <b>%s</b>\n   User: <code>%s</code>\n   WA: <code>%s</code>", i+1, a.Name, a.Username, a.WATarget))
-	}
-
-	return strings.Join(lines, "\n\n")
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -263,35 +264,52 @@ func (b *TelegramBot) AnswerCallbackQuery(queryID string, text string) {
 	}
 }
 
-// Progressive Visual Loading Bar Transitions
-func (b *TelegramBot) StartLoadingBar(chatID interface{}, actionText string) int {
-	msg := fmt.Sprintf("⏳ <b>%s</b>\n<code>[█████░░░░░] 50%%</code>", actionText)
-	id, err := b.SendMessage(chatID, msg, nil)
-	if err == nil {
+// ADAPTIVE LOADING BAR (Bervariasi sesuai kedalaman langkah, tidak kaku)
+// Jika 1 langkah: langsung 100% seketika tanpa delay buatan
+// Jika 2 langkah: 50% -> 100%
+// Jika 3 langkah: 33% -> 66% -> 100%
+func (b *TelegramBot) ShowAdaptiveProgress(chatID interface{}, step, totalSteps int, label string) int {
+	if totalSteps <= 1 {
+		msg := fmt.Sprintf("⏳ <b>%s</b>\n<code>[██████████] 100%%</code>", label)
+		id, _ := b.SendMessage(chatID, msg, nil)
 		return id
 	}
-	return 0
+
+	percent := int((float64(step) / float64(totalSteps)) * 100)
+	filled := percent / 10
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", 10-filled)
+
+	msg := fmt.Sprintf("⏳ <b>%s</b>\n<code>[%s] %d%%</code>", label, bar, percent)
+	id, _ := b.SendMessage(chatID, msg, nil)
+	return id
 }
 
-func (b *TelegramBot) AdvanceLoadingBar(chatID interface{}, msgID int, actionText string) {
-	if msgID <= 0 {
+func (b *TelegramBot) UpdateAdaptiveProgress(chatID interface{}, msgID, step, totalSteps int, label string) {
+	if msgID <= 0 || totalSteps <= 0 {
 		return
 	}
-	msg := fmt.Sprintf("⏳ <b>%s</b>\n<code>[████████░░] 80%%</code>", actionText)
+	percent := int((float64(step) / float64(totalSteps)) * 100)
+	if percent > 100 {
+		percent = 100
+	}
+	filled := percent / 10
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", 10-filled)
+
+	msg := fmt.Sprintf("⏳ <b>%s</b>\n<code>[%s] %d%%</code>", label, bar, percent)
 	_ = b.EditMessageText(chatID, msgID, msg, nil)
 }
 
-func (b *TelegramBot) FinishLoadingBar(chatID interface{}, msgID int, actionText string) {
+func (b *TelegramBot) FinishAdaptiveProgress(chatID interface{}, msgID int, label string) {
 	if msgID <= 0 {
 		return
 	}
-	msg := fmt.Sprintf("✅ <b>%s Selesai</b>\n<code>[██████████] 100%%</code>", actionText)
+	msg := fmt.Sprintf("✅ <b>%s</b>\n<code>[██████████] 100%%</code>", label)
 	_ = b.EditMessageText(chatID, msgID, msg, nil)
-	time.Sleep(350 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 	b.DeleteMessage(chatID, msgID)
 }
 
-// In-place Single-View Menu with Banner
+// In-place Single-View Menu with Banner (Zero Duplicate Menus)
 func (b *TelegramBot) SendMenu(chatID interface{}, text string, keyboard *InlineKeyboardMarkup, bannerPaths []string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -332,7 +350,7 @@ func (b *TelegramBot) SendMenu(chatID interface{}, text string, keyboard *Inline
 	}
 }
 
-// Show Content Card in-place
+// Show Content Card in-place (Zero Duplicate Message)
 func (b *TelegramBot) ShowContentCard(chatID interface{}, text string, keyboard *InlineKeyboardMarkup) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -399,15 +417,16 @@ func (b *TelegramBot) StartPolling(stopChan <-chan struct{}) {
 						chatID = u.CallbackQuery.Message.Chat.ID
 						msgID = u.CallbackQuery.Message.MessageID
 					}
-					b.AnswerCallbackQuery(u.CallbackQuery.ID, "")
 
 					if b.ActionHandler != nil {
 						go b.ActionHandler(action, chatID, msgID, u.CallbackQuery.ID)
+					} else {
+						b.AnswerCallbackQuery(u.CallbackQuery.ID, "")
 					}
 				}
 			}
 
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(400 * time.Millisecond)
 		}
 	}
 }
@@ -435,7 +454,7 @@ func (b *TelegramBot) getUpdates(offset int) ([]Update, error) {
 	return res.Result, nil
 }
 
-// 100% PARITAS KEYBOARDS V2
+// 100% PARITAS KEYBOARDS
 
 func GetMainKeyboard(page int, isCooldown bool) *InlineKeyboardMarkup {
 	var cooldownBtn InlineKeyboardButton
@@ -464,7 +483,6 @@ func GetMainKeyboard(page int, isCooldown bool) *InlineKeyboardMarkup {
 		}
 	}
 
-	// Page 1 Default
 	return &InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{

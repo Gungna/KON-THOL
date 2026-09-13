@@ -73,6 +73,7 @@ class NotificationDispatcher:
         endpoint = self.wa_config.get("endpoint_url", "https://api.fonnte.com/send")
 
         try:
+            clean_phone = phone.replace("+", "").replace("-", "").strip()
             if provider == "fonnte":
                 headers = {"Authorization": api_key}
                 payload = {
@@ -86,6 +87,38 @@ class NotificationDispatcher:
                     return True
                 else:
                     logger.warning(f"[WA] Gagal kirim WA via Fonnte: HTTP {res.status_code} - {res.text}")
+            elif provider == "waha":
+                # WAHA (WhatsApp HTTP API - Core / Plus)
+                ep = endpoint if endpoint else "http://localhost:3000/api/sendText"
+                chat_id = clean_phone if "@" in clean_phone else f"{clean_phone}@c.us"
+                session = self.wa_config.get("session_name", "default")
+                headers = {"Content-Type": "application/json"}
+                if api_key:
+                    headers["X-Api-Key"] = api_key
+                    headers["Authorization"] = f"Bearer {api_key}"
+                payload = {"chatId": chat_id, "text": text, "session": session}
+                res = requests.post(ep, headers=headers, json=payload, timeout=10)
+                if res.status_code in [200, 201]:
+                    logger.info(f"[WA] Berhasil kirim WA via WAHA ke {phone}")
+                    return True
+                else:
+                    logger.warning(f"[WA] Gagal kirim WA via WAHA: HTTP {res.status_code} - {res.text}")
+            elif provider in ["evo", "evolution", "evolution-api"]:
+                # Evolution API v1 / v2
+                instance = self.wa_config.get("session_name", "default")
+                ep = endpoint if endpoint else f"http://localhost:8080/message/sendText/{instance}"
+                if "/message/sendText" not in ep:
+                    ep = ep.rstrip("/") + f"/message/sendText/{instance}"
+                headers = {"Content-Type": "application/json"}
+                if api_key:
+                    headers["apikey"] = api_key
+                payload = {"number": clean_phone, "text": text}
+                res = requests.post(ep, headers=headers, json=payload, timeout=10)
+                if res.status_code in [200, 201]:
+                    logger.info(f"[WA] Berhasil kirim WA via Evolution API ke {phone}")
+                    return True
+                else:
+                    logger.warning(f"[WA] Gagal kirim WA via Evolution: HTTP {res.status_code} - {res.text}")
             elif provider in ["webhook", "generic", "wppconnect"]:
                 headers = {"Content-Type": "application/json"}
                 if api_key:

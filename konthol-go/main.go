@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html"
 	"log"
 	"os"
 	"os/signal"
@@ -19,10 +20,13 @@ import (
 	"konthol/telegram"
 )
 
+const LogFileName = "autopresence.log"
+
 type BotState struct {
 	CredPath       string
 	AccPath        string
 	StatePath      string
+	LogPath        string
 	BannerPaths    []string
 	Creds          *config.Credentials
 	Accounts       *config.AccountsConfig
@@ -32,7 +36,6 @@ type BotState struct {
 	CooldownDate   string
 	ForceSiaga     bool
 	AttendedKeys   map[string]bool
-	ActivityLogs   []string
 	LastScanTime   time.Time
 	StartTime      time.Time
 	mu             sync.RWMutex
@@ -51,6 +54,7 @@ func main() {
 	state.CredPath = *credFlag
 	state.AccPath = *accFlag
 	state.StatePath = *stateFlag
+	state.LogPath = LogFileName
 	state.AttendedKeys = make(map[string]bool)
 	state.BannerPaths = []string{
 		"banner.jpg",
@@ -68,32 +72,21 @@ func main() {
 	}
 	state.Creds = creds
 
-	// Load Accounts (Opsional)
+	// 2. Load Accounts
 	if accs, err := config.LoadAccounts(state.AccPath); err == nil {
 		state.Accounts = accs
 		log.Printf("[CONFIG] Multi-akun terdeteksi: %d akun mahasiswa", len(accs.Accounts))
 	}
 
-	// 2. Init Ethol Client
+	// 3. Init Ethol Client
 	etholCl, err := client.NewEtholClient(creds.Username, creds.Password)
 	if err != nil {
 		log.Fatalf("[FATAL] Inisialisasi client ETHOL gagal: %v", err)
 	}
 	state.PrimaryClient = etholCl
 
-	// 3. Login CAS SSO
-	ok, err := etholCl.LoginCAS()
-	if !ok || err != nil {
-		log.Printf("[WARN] Login CAS awal terkendala: %v (Akan dicoba ulang)", err)
-		addLog(fmt.Sprintf("Login CAS terkendala: %v", err))
-	} else {
-		addLog("Login CAS SSO berhasil")
-		if err := etholCl.UpdateCache(true); err != nil {
-			log.Printf("[WARN] Inisialisasi cache gagal: %v", err)
-		}
-	}
-
-	// 4. Init Telegram Bot
+	// 4. Inisialisasi Telegram Bot SEGERA (Non-Blocking)
+	// Memastikan bot langsung responsif terhadap perintah pengguna tanpa tertahan koneksi SSO
 	if creds.TelegramToken != "" {
 		tg := telegram.NewTelegramBot(creds.TelegramToken, creds.TelegramChatID)
 		state.TgBot = tg
@@ -103,15 +96,28 @@ func main() {
 		stopChan := make(chan struct{})
 		go tg.StartPolling(stopChan)
 
-		// Kirim tampilan menu utama awal
+		// Kirim menu utama awal
 		sendWelcomeMenu()
 	}
 
-	// 5. Start Polling Engine Goroutine
+	// 5. Otentikasi CAS SSO di Goroutine Background
+	go func() {
+		appendFileLog("[INFO] Menghubungkan otentikasi CAS SSO PENS di background...")
+		ok, err := etholCl.LoginCAS()
+		if !ok || err != nil {
+			appendFileLog(fmt.Sprintf("[ERROR] Login CAS awal terkendala: %v", err))
+		} else {
+			appendFileLog(fmt.Sprintf("[INFO] Login CAS Berhasil: %s (%s)", etholCl.UserInfo.Nama, etholCl.UserInfo.NipNrp))
+			_ = etholCl.UpdateCache(true)
+			sendWelcomeMenu()
+		}
+	}()
+
+	// 6. Start Polling Engine Loop
 	stopLoop := make(chan struct{})
 	go runSchedulerLoop(stopLoop)
 
-	log.Println("[SYSTEM] KON-THOL aktif penuh. Menunggu sinyal interrupt...")
+	appendFileLog("[INFO] Bot Polling aktif (Store-like V2 UI)...")
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -136,14 +142,14 @@ func getWIBStr() string {
 	return getWIBNow().Format("02-01-2006 15:04:05 WIB")
 }
 
-func addLog(msg string) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	entry := fmt.Sprintf("[%s] %s", getWIBNow().Format("15:04:05"), msg)
-	state.ActivityLogs = append(state.ActivityLogs, entry)
-	if len(state.ActivityLogs) > 20 {
-		state.ActivityLogs = state.ActivityLogs[len(state.ActivityLogs)-20:]
+func appendFileLog(line string) {
+	entry := fmt.Sprintf("%s WIB %s\n", getWIBNow().Format("2006-01-02 15:04:05"), line)
+	f, err := os.OpenFile(state.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		_, _ = f.WriteString(entry)
+		f.Close()
 	}
+	log.Print(line)
 }
 
 func loadAttendedKeys() {
@@ -158,7 +164,6 @@ func loadAttendedKeys() {
 			state.AttendedKeys[k] = true
 		}
 		state.mu.Unlock()
-		log.Printf("[STATE] %d key presensi tersimpan dimuat", len(keys))
 	}
 }
 
@@ -176,6 +181,14 @@ func saveAttendedKeys() {
 	}
 }
 
+func isCooldownActiveToday() bool {
+	if !state.CooldownActive {
+		return false
+	}
+	today := getWIBNow().Format("2006-01-02")
+	return state.CooldownDate == today
+}
+
 func runSchedulerLoop(stopChan <-chan struct{}) {
 	for {
 		select {
@@ -187,7 +200,19 @@ func runSchedulerLoop(stopChan <-chan struct{}) {
 
 			state.mu.RLock()
 			isCooldown := isCooldownActiveToday()
+			needLogin := (state.PrimaryClient.UserInfo == nil)
 			state.mu.RUnlock()
+
+			if needLogin {
+				ok, err := state.PrimaryClient.LoginCAS()
+				if ok {
+					appendFileLog(fmt.Sprintf("[INFO] Auto re-login CAS Berhasil: %s (%s)", state.PrimaryClient.UserInfo.Nama, state.PrimaryClient.UserInfo.NipNrp))
+					_ = state.PrimaryClient.UpdateCache(true)
+					sendWelcomeMenu()
+				} else {
+					appendFileLog(fmt.Sprintf("[WARN] Percobaan auto re-login terkendala: %v", err))
+				}
+			}
 
 			if isCooldown {
 				continue
@@ -198,29 +223,18 @@ func runSchedulerLoop(stopChan <-chan struct{}) {
 	}
 }
 
-func isCooldownActiveToday() bool {
-	if !state.CooldownActive {
-		return false
-	}
-	today := getWIBNow().Format("2006-01-02")
-	return state.CooldownDate == today
-}
-
 func getNextInterval() time.Duration {
 	now := getWIBNow()
 	hour := now.Hour()
 	minute := now.Minute()
 	timeVal := float64(hour) + float64(minute)/60.0
 
-	// 21:00 - 04:00 : Istirahat Malam (15 menit)
 	if hour >= 21 || hour < 4 {
 		return 15 * time.Minute
 	}
-	// 04:00 - 06:30 : Siaga Subuh (5 menit)
 	if timeVal >= 4.0 && timeVal < 6.5 {
 		return 5 * time.Minute
 	}
-	// Siaga Penuh Kuliah (35 detik)
 	return 35 * time.Second
 }
 
@@ -267,11 +281,11 @@ func scanActiveAttendance(manual bool) string {
 			saveAttendedKeys()
 
 			results = append(results, fmt.Sprintf("• %s: Berhasil diabsenkan (%s)", cName, pesan))
-			addLog(fmt.Sprintf("PRESENSI SUKSES: %s (%s)", cName, key))
+			appendFileLog(fmt.Sprintf("[INFO] PRESENSI DITEMUKAN & BERHASIL: %s | Key: %s (%s)", cName, key, pesan))
 			notifyAttendanceSuccess(cName, c.Dosen, key, pesan)
 		} else {
 			results = append(results, fmt.Sprintf("• %s: Gagal submit (%s)", cName, pesan))
-			addLog(fmt.Sprintf("PRESENSI GAGAL: %s (%s)", cName, pesan))
+			appendFileLog(fmt.Sprintf("[WARNING] PRESENSI GAGAL: %s | Key: %s (%s)", cName, key, pesan))
 		}
 	}
 
@@ -305,7 +319,7 @@ func notifyAttendanceSuccess(course, dosen, key, pesan string) {
 	_, _ = state.TgBot.SendMessage(state.Creds.TelegramChatID, msg, nil)
 }
 
-// UI Formatters 100% Identical to Python V2
+// Formatters 100% Identical to Python V2
 func getStatusBox() string {
 	nowWib := getWIBNow()
 	nowTimeStr := nowWib.Format("15:04")
@@ -392,8 +406,15 @@ func getStatusBox() string {
 		"└─────────────────────</code>", nowTimeStr)
 }
 
-func getWelcomeText() string {
+func getWelcomeText(page int) string {
 	box := getStatusBox()
+	if page == 2 {
+		return fmt.Sprintf("<b>KON-THOL ASSISTANT</b>\n"+
+			"<i>Menu Sistem, Notifikasi & Log</i>\n\n"+
+			"%s\n\n"+
+			"✦ <b>Creator : Gungna</b>\n\n"+
+			"Silakan pilih menu lanjutan di bawah:", box)
+	}
 	return fmt.Sprintf("<b>KON-THOL ASSISTANT</b>\n"+
 		"<i>Kawan Otomasi dan Notifikasi E-THOL</i>\n\n"+
 		"%s\n\n"+
@@ -405,7 +426,7 @@ func sendWelcomeMenu() {
 	if state.TgBot == nil || state.Creds.TelegramChatID == "" {
 		return
 	}
-	text := getWelcomeText()
+	text := getWelcomeText(1)
 	kb := telegram.GetMainKeyboard(1, isCooldownActiveToday())
 	state.TgBot.SendMenu(state.Creds.TelegramChatID, text, kb, state.BannerPaths)
 }
@@ -456,8 +477,7 @@ func formatStatusText() string {
 		aktivitas = "Siaga subuh menyambut jadwal kuliah"
 	} else {
 		scannerStatus = "🟢 Siaga Penuh"
-		activeClean := "Tidak ada kelas"
-		scannerSub = fmt.Sprintf("• %s", activeClean)
+		scannerSub = "• Siaga Presensi Perkuliahan"
 		jadwalRelogin = "Pengecekan sesi & re-login tiap 10 menit"
 		aktivitas = "Siaga memantau presensi & jadwal"
 	}
@@ -681,46 +701,248 @@ func formatTugasText() string {
 		}
 	}
 
-	sb.WriteString("\n⚠️ <i>Catatan: Harap pastikan sudah login ke akun ETHOL di browser terlebih dahulu sebelum membuka tautan di atas agar dapat langsung diarahkan ke tugas tersebut.</i>")
+	sb.WriteString("\n⚠️ <i>Catatan: Harap pastikan Anda sudah login ke akun ETHOL di browser terlebih dahulu sebelum membuka tautan di atas agar dapat langsung diarahkan ke tugas tersebut.</i>")
 	return sb.String()
 }
 
 func formatHelpText() string {
-	return "<b>PANDUAN PENGGUNAAN KON-THOL</b>\n\n" +
-		"• <b>⚡ Presensi Manual</b>: Memindai portal seketika untuk mengecek & submit kode presensi aktif.\n" +
-		"• <b>📅 Jadwal Kuliah</b>: Melihat jadwal perkuliahan terdaftar per hari.\n" +
-		"• <b>📝 Tugas Pending</b>: Memeriksa tugas kuliah yang belum diserahkan.\n" +
-		"• <b>📊 Rekap Kehadiran</b>: Menghitung persentase dan riwayat presensi resmi.\n" +
-		"• <b>💤 Mode Cooldown</b>: Menjeda polling agresif hingga tengah malam.\n" +
-		"• <b>🔄 Re-login Session</b>: Memperbarui otentikasi login CAS SSO PENS."
+	return "<b>PANDUAN PERINTAH LENGKAP KON-THOL:</b>\n\n" +
+		"⚡ <b>Presensi & Akademik:</b>\n" +
+		"• /scan atau /absen - Periksa & isi presensi seketika\n" +
+		"• /jadwal atau /matkul - Jadwal mingguan + status sesi hari ini\n" +
+		"• /tugas - Daftar tugas pending & link pengumpulan\n" +
+		"• /rekap - Rekapitulasi persentase kehadiran per matkul\n\n" +
+		"🔧 <b>Sistem & Pengaturan:</b>\n" +
+		"• /status - Informasi akun & status engine\n" +
+		"• /notif - Cek 5 notifikasi terakhir di portal ETHOL\n" +
+		"• /log - Riwayat log aktivitas berfilter\n" +
+		"• /cooldown - Istirahatkan bot setelah kelas hari ini usai\n" +
+		"• /resume - Batalkan cooldown & kembali siaga\n" +
+		"• /relogin - Sinkronisasi ulang sesi login SSO PENS\n" +
+		"• /public - Akses integrasi Multi-Account Public Edition\n" +
+		"• /help - Tampilkan panduan ini\n\n" +
+		"👨‍💻 <i>Credit : Gungna</i>"
 }
 
-func formatLogsText() string {
-	state.mu.RLock()
-	logs := state.ActivityLogs
-	state.mu.RUnlock()
-
-	if len(logs) == 0 {
-		return "<b>LOG AKTIVITAS SISTEM</b>\n\nBelum ada catatan aktivitas baru."
+func getRecentNotifs() string {
+	_, lines, err := state.PrimaryClient.GetUnreadNotifications()
+	if err == nil && len(lines) > 0 {
+		return fmt.Sprintf("🔔 <b>5 NOTIFIKASI TERAKHIR DI ETHOL:</b>\n\n%s", strings.Join(lines[:min(5, len(lines))], "\n\n"))
 	}
-	return fmt.Sprintf("<b>LOG AKTIVITAS SISTEM (%d Terakhir)</b>\n\n<code>%s</code>",
-		len(logs), strings.Join(logs, "\n"))
+	return "Belum ada riwayat notifikasi di portal ETHOL."
 }
 
-func formatPublicAccounts() string {
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func getFilteredLogs(filterType string) string {
+	data, err := os.ReadFile(state.LogPath)
+	if err != nil {
+		return "File log belum tersedia."
+	}
+
+	allLines := strings.Split(string(data), "\n")
+	var validLines []string
+	for _, l := range allLines {
+		t := strings.TrimSpace(l)
+		if t != "" {
+			validLines = append(validLines, t)
+		}
+	}
+
+	switch filterType {
+	case "error":
+		errKeywords := []string{"[error]", "[warning]", "gagal", "exception"}
+		var matched []string
+		for _, l := range validLines {
+			low := strings.ToLower(l)
+			for _, k := range errKeywords {
+				if strings.Contains(low, k) {
+					matched = append(matched, l)
+					break
+				}
+			}
+		}
+		if len(matched) == 0 {
+			return "⚠️ <b>LOG AKTIVITAS [ERROR & PERINGATAN] (WIB):</b>\n\n" +
+				"<i>Sistem berjalan normal. Tidak ada catatan error atau peringatan pada log.</i>"
+		}
+		start := 0
+		if len(matched) > 12 {
+			start = len(matched) - 12
+		}
+		var escaped []string
+		for _, m := range matched[start:] {
+			escaped = append(escaped, html.EscapeString(m))
+		}
+		return "⚠️ <b>LOG AKTIVITAS [ERROR & PERINGATAN] (WIB):</b>\n\n<code>" + strings.Join(escaped, "\n") + "</code>"
+
+	case "auth":
+		authKeywords := []string{"login", "cas", "sso", "listener", "validasi-token", "scanner daemon", "otentikasi", "refresh"}
+		var matched []string
+		for _, l := range validLines {
+			low := strings.ToLower(l)
+			for _, k := range authKeywords {
+				if strings.Contains(low, k) {
+					matched = append(matched, l)
+					break
+				}
+			}
+		}
+		if len(matched) == 0 {
+			return "🔑 <b>LOG LOGIN & LISTENER:</b>\n\n<i>Belum ada log sesi tercatat.</i>"
+		}
+		start := 0
+		if len(matched) > 12 {
+			start = len(matched) - 12
+		}
+		var escaped []string
+		for _, m := range matched[start:] {
+			escaped = append(escaped, html.EscapeString(m))
+		}
+		return "🔑 <b>LOG AKTIVITAS [LOGIN & LISTENER] (WIB):</b>\n\n<code>" + strings.Join(escaped, "\n") + "</code>"
+
+	case "notif":
+		notifKeywords := []string{"notifikasi", "notif", "tugas-baru", "presensi-kuliah"}
+		var matched []string
+		for _, l := range validLines {
+			low := strings.ToLower(l)
+			for _, k := range notifKeywords {
+				if strings.Contains(low, k) {
+					matched = append(matched, l)
+					break
+				}
+			}
+		}
+		if len(matched) == 0 {
+			return "🔔 <b>LOG NOTIFIKASI MASUK:</b>\n\n<i>Belum ada notifikasi baru yang tercatat.</i>"
+		}
+		start := 0
+		if len(matched) > 12 {
+			start = len(matched) - 12
+		}
+		var escaped []string
+		for _, m := range matched[start:] {
+			escaped = append(escaped, html.EscapeString(m))
+		}
+		return "🔔 <b>LOG AKTIVITAS [NOTIFIKASI] (WIB):</b>\n\n<code>" + strings.Join(escaped, "\n") + "</code>"
+
+	case "presensi":
+		presKeywords := []string{"presensi", "berhasil", "absen", "submit", "attended"}
+		var matched []string
+		for _, l := range validLines {
+			low := strings.ToLower(l)
+			for _, k := range presKeywords {
+				if strings.Contains(low, k) {
+					matched = append(matched, l)
+					break
+				}
+			}
+		}
+		if len(matched) == 0 {
+			return "✅ <b>LOG PRESENSI BERHASIL:</b>\n\n<i>Belum ada presensi yang tercatat hari ini.</i>"
+		}
+		start := 0
+		if len(matched) > 12 {
+			start = len(matched) - 12
+		}
+		var escaped []string
+		for _, m := range matched[start:] {
+			escaped = append(escaped, html.EscapeString(m))
+		}
+		return "✅ <b>LOG AKTIVITAS [PRESENSI BERHASIL] (WIB):</b>\n\n<code>" + strings.Join(escaped, "\n") + "</code>"
+
+	default: // all
+		start := 0
+		if len(validLines) > 12 {
+			start = len(validLines) - 12
+		}
+		var escaped []string
+		for _, l := range validLines[start:] {
+			escaped = append(escaped, html.EscapeString(l))
+		}
+		return "📜 <b>LOG AKTIVITAS SISTEM [GLOBAL] (WIB):</b>\n\n<code>" + strings.Join(escaped, "\n") + "</code>"
+	}
+}
+
+func formatKontholPublicCard() string {
+	accCount := 0
+	waTarget := "Belum diatur"
+	waProvider := "Belum diatur"
+
+	hasAcc := false
+	if state.Accounts != nil && len(state.Accounts.Accounts) > 0 {
+		hasAcc = true
+		accCount = len(state.Accounts.Accounts)
+		if state.Accounts.WhatsApp.TargetPhone != "" {
+			waTarget = state.Accounts.WhatsApp.TargetPhone
+		}
+		if state.Accounts.WhatsApp.Provider != "" {
+			waProvider = strings.ToUpper(state.Accounts.WhatsApp.Provider)
+		} else {
+			waProvider = "FONNTE"
+		}
+	}
+
+	statusFile := "🟡 Belum ada <code>accounts.json</code> (Menggunakan template contoh)"
+	if hasAcc {
+		statusFile = "🟢 <code>accounts.json</code> (Aktif)"
+	}
+
+	return fmt.Sprintf("👥 <b>KON-THOL PUBLIC EDITION — INTEGRATION</b>\n"+
+		"<i>Multi-Account Concurrency & WhatsApp Gateway Engine</i>\n\n"+
+		"<b>┌─ STATUS MODUL PUBLIK ────────────</b>\n"+
+		"│ File Config    : %s\n"+
+		"│ Akun Mahasiswa : <b>%d</b>\n"+
+		"│ WA Gateway     : <b>%s</b>\n"+
+		"│ Nomor Target   : <code>%s</code>\n"+
+		"│ Mode Eksekusi  : Multi-threaded (ThreadPool)\n"+
+		"│ Sesi Presensi  : Terisolasi per Akun\n"+
+		"<b>└──────────────────────────────────</b>\n\n"+
+		"💡 <i>Gunakan tombol di bawah untuk memicu pemindaian serentak seluruh akun mahasiswa atau mengecek detail daftar akun.</i>",
+		statusFile, accCount, waProvider, waTarget)
+}
+
+func formatPublicAccountsList() string {
 	if state.Accounts == nil || len(state.Accounts.Accounts) == 0 {
-		return "<b>DAFTAR AKUN TERDAFTAR</b>\n\nTidak ada multi-akun pada konfigurasi."
+		return "📋 <b>DAFTAR AKUN MAHASISWA</b>\n\nBelum ada akun yang terdaftar dalam konfigurasi."
 	}
+
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("<b>DAFTAR AKUN MAHASISWA (%d)</b>\n\n", len(state.Accounts.Accounts)))
-	for i, a := range state.Accounts.Accounts {
-		sb.WriteString(fmt.Sprintf("%d. <b>%s</b>\n   NRP/User: <code>%s</code>\n   WA: <code>%s</code>\n\n",
-			i+1, a.Name, a.Username, a.WATarget))
+	sb.WriteString(fmt.Sprintf("📋 <b>DAFTAR AKUN MAHASISWA (%d AKUN):</b>\n\n", len(state.Accounts.Accounts)))
+
+	for idx, acc := range state.Accounts.Accounts {
+		name := acc.Name
+		if name == "" {
+			name = fmt.Sprintf("Mahasiswa %d", idx+1)
+		}
+		user := acc.Username
+		maskedUser := user
+		if strings.Contains(user, "@") {
+			parts := strings.SplitN(user, "@", 2)
+			if len(parts[0]) > 3 {
+				maskedUser = parts[0][:3] + "***@" + parts[1]
+			}
+		} else if len(user) > 3 {
+			maskedUser = user[:3] + "***"
+		}
+		wa := acc.WATarget
+		if wa == "" {
+			wa = "-"
+		}
+
+		sb.WriteString(fmt.Sprintf("<b>%d. %s</b>\n   • Akun : <code>%s</code>\n   • WA   : <code>%s</code>\n\n",
+			idx+1, name, maskedUser, wa))
 	}
+
 	return sb.String()
 }
 
-// Telegram Command & Action Handlers
+// Commands & Action Handlers
 func handleTgCommand(cmd string, chatID int64, msgID int) {
 	cmdLower := strings.ToLower(strings.TrimSpace(cmd))
 	adminChatID, _ := strconv.ParseInt(state.Creds.TelegramChatID, 10, 64)
@@ -730,115 +952,210 @@ func handleTgCommand(cmd string, chatID int64, msgID int) {
 		return
 	}
 
+	appendFileLog(fmt.Sprintf("[INFO] Command diterima: %s", cmd))
+
 	switch {
-	case cmdLower == "/start" || cmdLower == "/menu" || cmdLower == "help" || cmdLower == "/help":
+	case contains([]string{"/start", "/help", "help", "/menu", "menu"}, cmdLower):
 		sendWelcomeMenu()
-	case cmdLower == "/status" || cmdLower == "status":
+
+	case contains([]string{"/status", "status"}, cmdLower):
 		txt := formatStatusText()
-		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
-	case cmdLower == "/scan" || cmdLower == "scan":
-		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang memindai presensi aktif di seluruh mata kuliah...</i>", nil)
-		res := scanActiveAttendance(true)
-		state.TgBot.ShowContentCard(chatID, res, telegram.GetBackKeyboard())
-	case cmdLower == "/jadwal" || cmdLower == "jadwal":
-		txt := formatJadwalText()
-		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
-	case cmdLower == "/rekap" || cmdLower == "rekap":
-		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang menghitung rekapitulasi kehadiran per mata kuliah...</i>", nil)
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetStatusKeyboard())
+
+	case contains([]string{"/rekap", "rekap"}, cmdLower):
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang menghitung rekapitulasi kehadiran per mata kuliah...</i>", telegram.GetBackKeyboard())
 		txt := formatRekapDetail()
 		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
-	case cmdLower == "/tugas" || cmdLower == "tugas":
-		txt := formatTugasText()
-		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
-	case cmdLower == "/cooldown" || cmdLower == "/istirahat":
+
+	case contains([]string{"/cooldown", "/istirahat", "cooldown", "istirahat"}, cmdLower):
 		state.mu.Lock()
 		state.CooldownActive = true
 		state.CooldownDate = getWIBNow().Format("2006-01-02")
 		state.mu.Unlock()
-		addLog("Mode cooldown diaktifkan")
+		appendFileLog("[INFO] Mode cooldown diaktifkan")
 		sendWelcomeMenu()
-	case cmdLower == "/resume" || cmdLower == "resume":
+
+	case contains([]string{"/public", "public", "/multi", "multi"}, cmdLower):
+		txt := formatKontholPublicCard()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetKontholPublicKeyboard())
+
+	case contains([]string{"/resume", "/siaga", "/batalistirahat", "resume", "siaga"}, cmdLower):
 		state.mu.Lock()
 		state.CooldownActive = false
 		state.ForceSiaga = true
 		state.mu.Unlock()
-		addLog("Mode siaga penuh diaktifkan")
+		appendFileLog("[INFO] Mode siaga penuh diaktifkan")
 		sendWelcomeMenu()
+
+	case contains([]string{"/scan", "/absen", "scan", "absen"}, cmdLower):
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang memindai seluruh mata kuliah ke server ETHOL...</i>", telegram.GetBackKeyboard())
+		txt := scanActiveAttendance(true)
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+
+	case contains([]string{"/tugas", "tugas"}, cmdLower):
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang mengambil data tugas perkuliahan...</i>", telegram.GetBackKeyboard())
+		txt := formatTugasText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+
+	case contains([]string{"/jadwal", "/matkul", "jadwal", "matkul"}, cmdLower):
+		txt := formatJadwalText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+
+	case contains([]string{"/notif", "/notifikasi", "notif"}, cmdLower):
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Mengambil notifikasi portal ETHOL...</i>", telegram.GetPage2BackKeyboard())
+		txt := getRecentNotifs()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetPage2BackKeyboard())
+
+	case contains([]string{"/log", "/logs", "log"}, cmdLower):
+		txt := getFilteredLogs("all")
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetLogKeyboard())
+
+	case contains([]string{"/relogin", "relogin"}, cmdLower):
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang merefresh otentikasi login ETHOL...</i>", telegram.GetPage2BackKeyboard())
+		ok, err := state.PrimaryClient.LoginCAS()
+		if ok {
+			_ = state.PrimaryClient.UpdateCache(true)
+			appendFileLog("[INFO] Sesi login disegarkan ulang")
+			state.TgBot.ShowContentCard(chatID, "✅ <b>SESI DIPERBARUI</b>\nOtentikasi login dan sinkronisasi data kuliah berhasil disegarkan.", telegram.GetPage2BackKeyboard())
+		} else {
+			state.TgBot.ShowContentCard(chatID, fmt.Sprintf("❌ <b>GAGAL REFRESH SESI</b>\n%v", err), telegram.GetPage2BackKeyboard())
+		}
+
 	default:
 		sendWelcomeMenu()
 	}
 }
 
+func contains(arr []string, target string) bool {
+	for _, a := range arr {
+		if a == target {
+			return true
+		}
+	}
+	return false
+}
+
 func handleTgAction(action string, chatID int64, msgID int, queryID string) {
 	switch action {
-	case "btn_page_1":
+	case "btn_menu", "btn_page_1":
 		sendWelcomeMenu()
+
 	case "btn_page_2":
-		text := getWelcomeText()
+		text := getWelcomeText(2)
 		kb := telegram.GetMainKeyboard(2, isCooldownActiveToday())
 		state.TgBot.SendMenu(chatID, text, kb, state.BannerPaths)
+
+	case "btn_status":
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang memuat status autentikasi SSO...</i>", telegram.GetStatusKeyboard())
+		txt := formatStatusText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetStatusKeyboard())
+
 	case "btn_scan":
-		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang memindai presensi aktif di seluruh mata kuliah...</i>", nil)
-		res := scanActiveAttendance(true)
-		state.TgBot.ShowContentCard(chatID, res, telegram.GetBackKeyboard())
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang memindai seluruh mata kuliah ke server ETHOL...</i>", telegram.GetBackKeyboard())
+		txt := scanActiveAttendance(true)
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+		if !strings.Contains(txt, "Gagal") && !strings.Contains(txt, "Error") && !strings.Contains(txt, "belum tersedia") {
+			go func() {
+				time.Sleep(3 * time.Second)
+				sendWelcomeMenu()
+			}()
+		}
+
+	case "btn_rekap":
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang menghitung rekapitulasi kehadiran per mata kuliah...</i>", telegram.GetBackKeyboard())
+		txt := formatRekapDetail()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+
+	case "btn_tugas":
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang mengambil data tugas perkuliahan...</i>", telegram.GetBackKeyboard())
+		txt := formatTugasText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+
 	case "btn_jadwal":
 		txt := formatJadwalText()
 		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
-	case "btn_tugas":
-		txt := formatTugasText()
-		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
-	case "btn_rekap":
-		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang menghitung rekapitulasi kehadiran per mata kuliah...</i>", nil)
-		txt := formatRekapDetail()
-		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
-	case "btn_log":
-		txt := formatLogsText()
-		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+
+	case "btn_notif":
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Mengambil notifikasi portal ETHOL...</i>", telegram.GetPage2BackKeyboard())
+		txt := getRecentNotifs()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetPage2BackKeyboard())
+
+	case "btn_log", "btn_log_all":
+		txt := getFilteredLogs("all")
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetLogKeyboard())
+
+	case "btn_log_err":
+		txt := getFilteredLogs("error")
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetLogKeyboard())
+
+	case "btn_log_auth":
+		txt := getFilteredLogs("auth")
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetLogKeyboard())
+
+	case "btn_log_notif":
+		txt := getFilteredLogs("notif")
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetLogKeyboard())
+
+	case "btn_log_pres":
+		txt := getFilteredLogs("presensi")
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetLogKeyboard())
+
+	case "btn_help":
+		txt := formatHelpText()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetPage2BackKeyboard())
+
+	case "btn_relogin":
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang merefresh otentikasi login ETHOL...</i>", telegram.GetPage2BackKeyboard())
+		ok, err := state.PrimaryClient.LoginCAS()
+		if ok {
+			_ = state.PrimaryClient.UpdateCache(true)
+			appendFileLog("[INFO] Sesi login disegarkan ulang")
+			state.TgBot.ShowContentCard(chatID, "✅ <b>SESI DIPERBARUI</b>\nOtentikasi login dan sinkronisasi data kuliah berhasil disegarkan.", telegram.GetPage2BackKeyboard())
+			go func() {
+				time.Sleep(3 * time.Second)
+				text := getWelcomeText(2)
+				kb := telegram.GetMainKeyboard(2, isCooldownActiveToday())
+				state.TgBot.SendMenu(chatID, text, kb, state.BannerPaths)
+			}()
+		} else {
+			state.TgBot.ShowContentCard(chatID, fmt.Sprintf("❌ <b>GAGAL REFRESH SESI</b>\n%v", err), telegram.GetPage2BackKeyboard())
+		}
+
 	case "btn_cooldown":
 		state.mu.Lock()
 		state.CooldownActive = true
 		state.CooldownDate = getWIBNow().Format("2006-01-02")
 		state.mu.Unlock()
-		addLog("Mode cooldown diaktifkan")
-		sendWelcomeMenu()
+		appendFileLog("[INFO] Mode cooldown diaktifkan")
+		state.TgBot.ShowContentCard(chatID, "🟡 <b>MODE COOLDOWN DIAKTIFKAN</b>\nPolling agresif diistirahatkan hingga tengah malam (00:00 WIB).", telegram.GetBackKeyboard())
+		go func() {
+			time.Sleep(3 * time.Second)
+			sendWelcomeMenu()
+		}()
+
 	case "btn_resume":
 		state.mu.Lock()
 		state.CooldownActive = false
 		state.ForceSiaga = true
 		state.mu.Unlock()
-		addLog("Mode siaga penuh diaktifkan")
-		sendWelcomeMenu()
-	case "btn_notif":
-		count, lines, _ := state.PrimaryClient.GetUnreadNotifications()
-		if count == 0 {
-			state.TgBot.ShowContentCard(chatID, "<b>NOTIFIKASI ETHOL</b>\n\nTidak ada notifikasi baru yang belum dibaca.", telegram.GetBackKeyboard())
-		} else {
-			state.TgBot.ShowContentCard(chatID, fmt.Sprintf("<b>NOTIFIKASI ETHOL (%d Belum Dibaca)</b>\n\n%s", count, strings.Join(lines, "\n")), telegram.GetBackKeyboard())
-		}
-	case "btn_status":
-		txt := formatStatusText()
-		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
-	case "btn_relogin":
-		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang merefresh otentikasi login ETHOL...</i>", nil)
-		ok, err := state.PrimaryClient.LoginCAS()
-		if ok {
-			_ = state.PrimaryClient.UpdateCache(true)
-			addLog("Sesi login disegarkan ulang")
-			state.TgBot.ShowContentCard(chatID, "✅ <b>SESI DIPERBARUI</b>\nOtentikasi login dan sinkronisasi data kuliah berhasil disegarkan.", telegram.GetBackKeyboard())
-		} else {
-			state.TgBot.ShowContentCard(chatID, fmt.Sprintf("❌ <b>GAGAL REFRESH SESI</b>\n%v", err), telegram.GetBackKeyboard())
-		}
+		appendFileLog("[INFO] Mode siaga penuh diaktifkan")
+		state.TgBot.ShowContentCard(chatID, "🟢 <b>SIAGA PENUH DIAKTIFKAN</b>\nBot kembali memantau presensi dan jadwal secara aktif.", telegram.GetBackKeyboard())
+		go func() {
+			time.Sleep(3 * time.Second)
+			sendWelcomeMenu()
+		}()
+
 	case "btn_konthol_public":
-		state.TgBot.ShowContentCard(chatID, "<b>MODUL KON-THOL PUBLIC EDITION</b>\n\nKelola pemindaian serentak dan daftar akun mahasiswa terdaftar.", telegram.GetPublicKeyboard())
-	case "btn_help":
-		txt := formatHelpText()
-		state.TgBot.ShowContentCard(chatID, txt, telegram.GetBackKeyboard())
+		txt := formatKontholPublicCard()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetKontholPublicKeyboard())
+
 	case "btn_public_scan":
-		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang menjalankan siklus scan serentak seluruh akun mahasiswa...</i>", telegram.GetPublicKeyboard())
-		res := scanActiveAttendance(true)
-		state.TgBot.ShowContentCard(chatID, res, telegram.GetPublicKeyboard())
+		state.TgBot.ShowContentCard(chatID, "⏳ <i>Sedang menjalankan siklus scan serentak seluruh akun mahasiswa...</i>", telegram.GetKontholPublicKeyboard())
+		txt := scanActiveAttendance(true)
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetKontholPublicKeyboard())
+
 	case "btn_public_accounts":
-		txt := formatPublicAccounts()
-		state.TgBot.ShowContentCard(chatID, txt, telegram.GetPublicKeyboard())
+		txt := formatPublicAccountsList()
+		state.TgBot.ShowContentCard(chatID, txt, telegram.GetKontholPublicKeyboard())
 	}
 }

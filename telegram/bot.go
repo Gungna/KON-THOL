@@ -468,16 +468,16 @@ func GetMainKeyboard(page int, isCooldown bool) *InlineKeyboardMarkup {
 		return &InlineKeyboardMarkup{
 			InlineKeyboard: [][]InlineKeyboardButton{
 				{
-					{Text: "🔔 Notifikasi ETHOL", CallbackData: "btn_notif"},
-					{Text: "ℹ️ Status Engine", CallbackData: "btn_status"},
+					{Text: "🔔 Notifikasi", CallbackData: "btn_notif"},
+					{Text: "ℹ️ Status Sistem", CallbackData: "btn_status"},
 				},
 				{
-					{Text: "🔄 Re-login Session", CallbackData: "btn_relogin"},
-					{Text: "👥 Multi-Account (Public)", CallbackData: "btn_konthol_public"},
+					{Text: "🔄 Re-login Sesi", CallbackData: "btn_relogin"},
+					{Text: "👥 Multi-Akun", CallbackData: "btn_konthol_public"},
 				},
 				{
-					{Text: "❓ Panduan Bantuan", CallbackData: "btn_help"},
-					{Text: "« Kembali ke Menu Utama", CallbackData: "btn_page_1"},
+					{Text: "❓ Bantuan", CallbackData: "btn_help"},
+					{Text: "« Menu Utama", CallbackData: "btn_page_1"},
 				},
 			},
 		}

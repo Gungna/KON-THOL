@@ -5,256 +5,230 @@
 # KON-THOL 👀🐦
 ### "Kawan Otomasi dan Notifikasi untuk E-THOL PENS"
 
-**KON-THOL** adalah bot asisten automasi presensi dan monitoring informasi E-THOL cerdas berbasis Python & Telegram Bot untuk mahasiswa Politeknik TERBAEKKK se-Asia Tenggara. Dirancang untuk mempermudah presensi perkuliahan, memeriksa jadwal harian & mingguan, merekap kehadiran, serta mengakses data portal tanpa hambatan keharusan login berulang kali, terutama saat portal sedang padat diakses.
+**KON-THOL** adalah bot asisten automasi pribadi untuk kebutuhan perkuliahan yang cerdas berbasis Python & Telegram Bot untuk mahasiswa Politeknik TERBAEKKK se-Asia Tenggara. Dirancang untuk mempermudah mahasiswa memantau presensi, mengecek jadwal kuliah, serta mencatat tugas yang belum dikumpulkan dengan antarmuka yang sangat mudah digunakan.
 
 ---
 
-## Pilihan Metode Pengoperasian
+## Pilihan Penggunaan: Di-pair ke Bot Telegram atau Dijalankan dari Terminal / HP
 
-Sistem dapat dijalankan secara fleksibel sesuai infrastruktur yang tersedia:
+Bot **KON-THOL** dirancang paling optimal ketika **di-pair / diintegrasikan dengan Bot Telegram pribadi** Anda:
+- Anda memiliki kendali langsung di genggaman smartphone tanpa perlu selalu membuka laptop atau terminal.
+- Notifikasi presensi berhasil, tugas baru, dan pengingat deadline langsung masuk ke chat Telegram Anda.
+- Seluruh perintah dapat diakses cepat menggunakan *slash command* standar maupun antarmuka tombol interaktif (*inline keyboard*).
 
-1. **Terintegrasi dengan Bot Telegram (Pilihan Utama)**:
-   - Seluruh kontrol dan pemantauan berada langsung di aplikasi Telegram (smartphone / desktop).
-   - Notifikasi pengisian presensi, tugas baru, dan pengingat jadwal dikirimkan secara instan.
-   - Mendukung kontrol multi-akun dengan pemisahan hak akses (Admin & Member).
-   - Seluruh perintah dapat diakses cepat melalui tombol menu interaktif maupun *slash command*.
-2. **Berjalan Mandiri dari Terminal / CLI (Laptop / Termux)**:
-   - Dapat dijalankan secara lokal tanpa menghubungkan bot Telegram.
-   - **Di Android (Termux):** Notifikasi sistem dikirim ke status bar perangkat melalui integrasi `termux-api`.
-   - **Di Terminal PC/Linux:** Notifikasi serta status proses dicetak rapi secara real-time di layar konsol.
-   - **Mode Interaktif CLI:** Perintah dapat diketik langsung di terminal seperti `scan`, `jadwal`, `tugas`, `rekap`, `log`, `status`, `cooldown`, atau `resume`.
-3. **Modul Khusus Multi-Akun & WhatsApp Gateway**:
-   - Menjalankan pemindaian presensi serentak untuk banyak akun mahasiswa menggunakan `kon_thol_public.py`.
-   - Laporan kehadiran dikirimkan langsung ke nomor WhatsApp masing-masing mahasiswa (mendukung Fonnte atau self-hosted gateway seperti WAHA / Evolution API) dengan fallback Telegram.
+> [!TIP]
+> Menghubungkan bot ke Telegram pribadi adalah cara paling nyaman: seluruh informasi jadwal, rekap kehadiran, dan tugas kuliah bisa diakses cukup dengan satu ketukan tombol di HP Anda tanpa repot menyalakan laptop atau terminal.
+
+**Apakah bisa dipakai tanpa Telegram (Hanya dari Terminal)?**  
+Bisa. Anda tetap dapat menjalankan sistem di laptop atau HP (Termux) secara mandiri:
+1. **Notifikasi Tetap Masuk Langsung ke Perangkat:**
+   - **Di HP Android (Termux):** Notifikasi presensi dan tugas akan muncul sebagai banner notifikasi di status bar HP Anda (menggunakan paket `termux-api`).
+   - **Di Desktop Windows:** Notifikasi presensi muncul otomatis sebagai Windows Toast Notification di sudut layar.
+   - **Di Konsol Terminal (Linux):** Konfirmasi presensi dikirim ke notifikasi desktop (`notify-send`) serta dicetak rapi dan jelas secara real-time di layar terminal.
+2. **Mode Interaktif Terminal (Ketik Perintah Langsung):**
+   Saat skrip berjalan di terminal atau Termux, Anda bisa langsung mengetik perintah interaktif seperti `scan`, `jadwal`, `tugas`, `rekap`, `log`, `status`, `cooldown`, atau `resume` untuk mendapatkan respon langsung di layar terminal Anda.
 
 > [!IMPORTANT]
-> **Catatan Stabilitas Operasional:** Pengoperasian di smartphone Android (Termux) atau laptop pribadi berpotensi terhenti sewaktu-waktu akibat manajemen penghemat daya (*battery saver*) atau mode sleep perangkat. Untuk operasional presensi yang **stabil, konsisten, dan teruji 24/7**, disarankan menjalankan bot di server Linux / VPS mandiri yang terhubung ke Bot Telegram.
+> **Catatan Stabilitas:** Selain penggunaan melalui bot Telegram, **BELUM DAPAT DIPASTIKAN BAHWA YANG DIPAKAI AKAN STABLE**. Hal ini karena manajemen baterai background pada smartphone (Termux) maupun mode sleep pada laptop dapat mematikan proses sewaktu-waktu di luar kendali kita. Mode operasional yang **pasti stable dan teruji** adalah ketika di-pair dengan Bot Telegram pribadi Anda (terlebih jika dijalankan di VPS/server Linux 24/7).
 
 ---
 
 ## Fitur Utama
 
-- **Pemindaian & Otomasi Presensi Cepat**:  
-  Mendeteksi dan menyelesaikan sesi presensi secara otomatis saat dibuka oleh dosen pengampu, memastikan kehadiran tercatat tepat waktu tanpa mengganggu konsentrasi belajar.
-- **Arsitektur Multi-Akun (Admin & Member Space)**:  
-  Mendukung pengelolaan lebih dari satu akun mahasiswa dalam satu sistem bot dengan pembagian ruang kerja:
-  - **Tampilan Admin (Pemilik Bot)**: Dashboard terpusat untuk memantau status operasional seluruh akun (`/status`), perbandingan rekapitulasi kehadiran (`/rekap all` atau `/rekap [urutan]`), agenda kuliah harian (`/jadwal all` atau `/jadwal [urutan]`), daftar tugas gabungan (`/tugas all`), serta pemindaian serentak (`/scan all`).
-  - **Tampilan Member (Mahasiswa Tertaut)**: Ruang privat terlindungi. Mahasiswa yang menautkan Telegram Chat ID hanya dapat mengakses jadwal, tugas, rekapitulasi, dan status presensi akun miliknya sendiri tanpa melihat data mahasiswa lain.
-  - **Single Account Mode**: Bila hanya terdapat 1 akun terdaftar, menu otomatis beroperasi dalam format personal tunggal yang ringkas.
-- **Antarmuka Bersih & Otomatis (Single-View Clean UI)**:  
-  Ruang obrolan Telegram tetap rapi layaknya antarmuka aplikasi. Pesan perintah dan interaksi sementara dibersihkan otomatis, menyisakan Banner Menu utama di bagian atas dan respon data terbaru di bawahnya.
-- **Siklus Operasional Berdasarkan Waktu Perkuliahan**:  
-  - 🌅 **Siaga Subuh (04:00 - 06:30 WIB)**: Bersiap memantau jadwal dan persiapan sesi perkuliahan sejak dini hari sebelum azan Subuh berkumandang.  
-  - 🟢 **Siaga Penuh (06:30 - 21:30 WIB)**: Siklus pemindaian presensi dan pemantauan tugas aktif penuh pada jam operasional kuliah reguler.  
-  - 💤 **Istirahat Malam (21:30 - 04:00 WIB)**: Menjeda pemindaian saat malam hari demi efisiensi resource dan menjaga etika beban server.
-- **Jadwal Kuliah Komprehensif**:  
-  Menyajikan jadwal kuliah mingguan terurut hari dan jam, dilengkapi informasi ruang perkuliahan, nama dosen pengampu, serta status kehadiran mata kuliah hari ini.
-- **Pemantau Tugas & Tautan Langsung Portal**:  
-  Menampilkan daftar tugas yang belum dikumpulkan, batas waktu pengumpulan (*deadline*), serta tautan langsung menuju halaman pengumpulan di portal ETHOL.
-- **Rekapitulasi Kehadiran Akurat**:  
-  Menghitung persentase kehadiran semester berjalan dan rincian kehadiran per mata kuliah berdasarkan data portal resmi.
-- **Pengecekan Notifikasi Portal**:  
-  Mengambil umpan notifikasi terbaru dari portal akademik secara berkala.
-- **Pencatatan Log Transparan**:  
-  Menampilkan catatan riwayat aktivitas sistem terkini (via `/log` atau CLI `log`) untuk memudahkan pemantauan proses tanpa membuka berkas log secara manual.
-- **Mode Cooldown & Siaga Manual**:  
-  Mendukung pengistirahatan proses scanner secara manual saat seluruh kuliah selesai (`/cooldown`) dan mengaktifkannya kembali kapan saja (`/resume`).
+- **Otomasi Presensi Tenang & Cepat**:  
+  Memantau dan mengisi presensi secara otomatis ketika sesi kuliah dibuka oleh dosen, sehingga Anda tidak perlu cemas terlewat sesi presensi saat sedang fokus menyimak materi.
+- **Antarmuka Rapi & Otomatis (Single-View Clean UI)**:  
+  Chat Telegram tetap bersih dan rapi layaknya dashboard aplikasi. Perintah yang telah usang beserta pesan interaksi perantara otomatis dibersihkan dari ruang chat, menyisakan Banner Menu utama di atas dan hasil perintah terbaru Anda di bawahnya.
+- **Transisi Visual Progresif (Loading Bar 50%-100%)**:  
+  Umpan balik seketika saat memindai presensi atau memuat data dengan indikator visual dinamis sehingga pengguna mengetahui status pemrosesan sistem secara transparan.
+- **Jadwal Operasional Cerdas (Siaga Subuh & Istirahat Malam)**:  
+  - 🌅 **Siaga Subuh (Mulai 04:00 WIB)**: Aktif sejak waktu sebelum azan Subuh berkumandang untuk siaga memantau persiapan sesi dan jadwal perkuliahan hari ini.  
+  - 🟢 **Siaga Penuh (06:30 - 21:30 WIB)**: Memantau presensi dan jadwal secara aktif di jam perkuliahan reguler.  
+  - 💤 **Istirahat Malam (21:30 - 04:00 WIB)**: Mengistirahatkan frekuensi polling saat larut malam karena tidak ada perkuliahan aktif di tengah malam, menghemat beban server secara etis dan efisien.
+- **Jadwal Kuliah Rapi & Info Dosen**:  
+  Menampilkan jadwal mingguan rapi terurut hari & jam lengkap dengan waktu, ruang kuliah, nama dosen pengampu, serta indikator kehadiran untuk mata kuliah hari ini.
+- **Pemantau Tugas & Tautan Portal ETHOL**:  
+  Menyajikan daftar tugas kuliah yang belum dikumpulkan secara rapi, lengkap dengan sisa waktu tenggat dan tautan langsung untuk membuka halaman pengumpulan tugas di ETHOL.
+- **Statistik & Rekapitulasi Kehadiran Resmi**:  
+  Melihat persentase kehadiran semester berjalan serta rincian sesi kehadiran per mata kuliah secara transparan dan akurat.
+- **Filter Log Aktivitas 5 Kategori**:  
+  Menyajikan riwayat log terpilah (Log Error, Log Login & Listener, Log Notif Masuk, Log Presensi Berhasil, dan Log Global) langsung dari sub-menu Telegram.
+- **Edisi Khusus: Multi-Account Concurrency & WhatsApp Gateway (`kon_thol_public.py`)**:  
+  Mendukung pemindaian dan pengisian presensi otomatis untuk 2 atau lebih akun mahasiswa sekaligus secara serentak (*concurrent multithreading*) menggunakan `ThreadPoolExecutor`, lengkap dengan notifikasi WhatsApp Gateway real-time (Fonnte, WPPConnect, atau Webhook) serta fallback Telegram.
 
 ---
 
-## Panduan Integrasi Telegram Bot (Dari Awal Sampai Selesai)
+## Panduan Rekomendasi Deployment: Mending Pakai Apa & di Mana?
 
-Setiap pengguna membuat dan menggunakan Bot Telegram pribadi secara mandiri tanpa biaya. Berikut alur penyiapan dari awal:
+Untuk mendapatkan efisiensi dan performa maksimal, berikut rekomendasi runtime berdasarkan perangkat yang digunakan:
 
-1. **Pembuatan Bot di Telegram**:
-   - Buka aplikasi Telegram, cari akun resmi **@BotFather**, lalu tekan tombol Start.
-   - Kirim perintah `/newbot`.
-   - Masukkan nama tampilan bot yang diinginkan (contoh: `Asisten Presensi PENS`).
-   - Masukkan username bot unik yang berakhiran kata `bot` (contoh: `pens_presensi_robot`).
-   - BotFather akan memberikan **HTTP API Token** (contoh format: `7123456789:AAFxX...`). Simpan token ini dengan aman.
-2. **Mendapatkan Telegram Chat ID**:
-   - Cari akun bot **@userinfobot** di Telegram, lalu tekan tombol Start.
-   - Bot akan membalas dengan menampilkan nomor ID Telegram pengguna (berupa deretan angka).
-3. **Mengaktifkan Izin Pesan Bot**:
-   - Cari username bot pribadi yang baru saja dibuat di langkah nomor 1.
-   - Tekan tombol **Start** atau kirim pesan `/start` ke bot tersebut agar bot memiliki izin mengirimkan notifikasi.
-4. **Penyimpanan Konfigurasi**:
-   - Jalankan wizard otomatis:
-     ```bash
-     python setup.py
-     ```
-   - Masukkan email SSO PENS, password SSO, Token Bot Telegram, serta Chat ID saat diminta. Seluruh konfigurasi akan tersimpan otomatis di berkas lokal `credentials.json`.
+```
+┌─────────────────────────┬─────────────────────────┬────────────────────────────────────────────────────────┐
+│ Lingkungan / Host       │ Pilihan Engine Terbaik  │ Alasan & Keunggulan                                    │
+├─────────────────────────┼─────────────────────────┼────────────────────────────────────────────────────────┤
+│ 📱 HP Android (Termux)  │ Python Portable Edition │ Praktis 100%, tanpa instalasi compiler, hemat memori HP│
+│ ☁️ VPS / Server Linux   │ Hybrid Go + Rust Engine │ Konsumsi RAM 5-8 MB, zero GC lag, non-blocking polling │
+│ 💻 Laptop / PC Desktop  │ Python / Hybrid Binary  │ Fleksibel untuk monitoring langsung saat jam kuliah    │
+└─────────────────────────┴─────────────────────────┴────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Panduan Integrasi WhatsApp Gateway (Dari Awal Sampai Selesai)
+### Opsi A: Panduan Menjalankan di HP Android (Termux) — Rekomendasi Portabel
 
-Untuk pengiriman notifikasi presensi otomatis melalui WhatsApp ke nomor pribadi maupun rekan kelompok, sistem menyediakan integrasi gateway pada berkas `kon_thol_public.py`.
+Jika ingin menjalankan bot langsung dari smartphone tanpa menyewa server:
 
-### Pilihan A: Menggunakan Layanan Cloud Gateway (Fonnte)
-1. Buka situs penyedia gateway **Fonnte** dan lakukan pendaftaran akun.
-2. Masuk ke dashboard Fonnte, lalu hubungkan nomor WhatsApp pengirim dengan memindai kode QR pada menu *Perangkat Tertaut* di aplikasi WhatsApp smartphone.
-3. Buka menu *API Token* di dashboard Fonnte, lalu salin token yang tersedia.
-4. Buka berkas `accounts.json` (salinan dari `accounts.example.json`), lalu sesuaikan bagian konfigurasi:
-   ```json
-   "whatsapp": {
-       "provider": "fonnte",
-       "api_key": "MASUKKAN_TOKEN_FONNTE_DISINI",
-       "target_phone": "6281234567890",
-       "endpoint_url": "https://api.fonnte.com/send"
-   }
-   ```
-5. Masukkan nomor WhatsApp tujuan pada masing-masing data akun mahasiswa di daftar `accounts`. Format nomor diawali kode negara tanpa tanda tambah (contoh: `6281234567890`).
-
-### Pilihan B: Menggunakan Gateway Mandiri / Self-Hosted (WAHA / Evolution API / Webhook)
-1. Jalankan layanan gateway WhatsApp seperti **WAHA (WhatsApp HTTP API)** atau **Evolution API** di server pribadi (misal menggunakan Docker).
-2. Tautkan nomor WhatsApp pada instance gateway tersebut melalui dashboard lokal.
-3. Pada berkas `accounts.json`, ubah nilai `provider` menjadi `webhook` dan arahkan `endpoint_url` ke alamat server gateway:
-   ```json
-   "whatsapp": {
-       "provider": "webhook",
-       "api_key": "BEARER_TOKEN_JIKA_ADA",
-       "target_phone": "6281234567890",
-       "endpoint_url": "http://IP_SERVER_GATEWAY:PORT/api/sendText"
-   }
-   ```
-4. Jalankan modul multi-akun:
-   ```bash
-   python kon_thol_public.py
-   ```
-
----
-
-## Pengelolaan Akun (Multi-Account)
-
-Pengelolaan akun dapat dilakukan langsung melalui antarmuka Telegram oleh Admin bot:
-
-| Perintah | Format Input | Deskripsi |
-| :--- | :--- | :--- |
-| `/accounts` | `/accounts` | Menampilkan seluruh daftar akun terdaftar beserta status login dan tautan Telegram ID |
-| `/addaccount` | `/addaccount Nama \| email \| password [\| telegram_chat_id]` | Mendaftarkan akun mahasiswa baru ke sistem bot |
-| `/delaccount` | `/delaccount [urutan_akun / email / telegram_id]` | Menghapus akun terdaftar menggunakan nomor urut (contoh: `/delaccount 2`), email, atau ID Telegram |
-
----
-
-## Panduan Pemasangan (Instalasi)
-
-### Metode 1: Instalasi di VPS / Server Linux (Rekomendasi 24/7)
-
-1. **Perbarui sistem dan pasang dependensi:**
-   ```bash
-   sudo apt update && sudo apt install python3 python3-pip git -y
-   ```
-2. **Klon repositori:**
-   ```bash
-   git clone https://github.com/Gungna/KON-THOL.git /opt/ethol-autopresence
-   cd /opt/ethol-autopresence
-   pip3 install requests beautifulsoup4 urllib3
-   ```
-3. **Jalankan konfigurasi awal:**
-   ```bash
-   python3 setup.py
-   ```
-4. **Jalankan bot:**
-   ```bash
-   python3 ethol_autopresence.py
-   ```
-
----
-
-### Metode 2: Instalasi di HP Android (Termux)
-
-1. Pasang aplikasi **Termux** (disarankan via [F-Droid](https://f-droid.org/en/packages/com.termux/)).
-2. Buka Termux, lalu jalankan:
+1. **Instal Aplikasi Termux:**  
+   Gunakan Termux versi resmi dari [F-Droid](https://f-droid.org/en/packages/com.termux/).
+2. **Siapkan Paket Pendukung:**  
+   Buka aplikasi Termux dan jalankan perintah berikut:
    ```bash
    pkg update && pkg install python git termux-api -y
    termux-wake-lock
    ```
-   *(Pastikan pengaturan manajemen baterai aplikasi Termux di smartphone disetel ke "Tidak Dibatasi / Unrestricted").*
-3. Klon repositori dan pasang pustaka:
+   *(Penting: Setel pengaturan baterai aplikasi Termux di pengaturan Android menjadi "Tidak Dibatasi / Unrestricted" agar sistem tidak mematikan proses saat layar mati).*
+3. **Clone Repositori & Pasang Dependensi:**
    ```bash
    git clone https://github.com/Gungna/KON-THOL.git
    cd KON-THOL
    pip install requests beautifulsoup4 urllib3
    ```
-4. Jalankan konfigurasi dan aplikasi:
+4. **Konfigurasi Akun:**
    ```bash
    python setup.py
+   ```
+5. **Jalankan Bot:**
+   ```bash
    python ethol_autopresence.py
    ```
 
 ---
 
-### Metode 3: Instalasi di Laptop / PC Pribadi (Windows / macOS)
+### Opsi B: Panduan Menjalankan di VPS / Server Linux (Debian / Ubuntu) — Rekomendasi Performa Tinggi (Go + Rust)
 
-1. Pastikan **Python 3.10+** telah terpasang.
-2. Buka Terminal / PowerShell di dalam folder proyek, lalu pasang dependensi:
+Untuk operasional stabil 24 jam nonstop dengan efisiensi sumber daya maksimal:
+
+1. **Pasang Toolchain (Go & Rust):**
    ```bash
-   pip install requests beautifulsoup4 urllib3
+   sudo apt update && sudo apt install build-essential git -y
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+   source $HOME/.cargo/env
    ```
-3. Jalankan wizard konfigurasi dan mulai bot:
+2. **Kompilasi Core Rust:**
    ```bash
-   python setup.py
-   python ethol_autopresence.py
+   cd core
+   cargo build --release
+   ```
+3. **Kompilasi Binary Hybrid Go:**
+   ```bash
+   cd ..
+   CGO_ENABLED=1 go build -ldflags="-s -w" -o konthol_hybrid main.go
+   ```
+4. **Jalankan sebagai Systemd Service (Otomatis Nyala Saat Reboot):**
+   Buat berkas `/etc/systemd/system/konthol.service`:
+   ```ini
+   [Unit]
+   Description=KON-THOL Hybrid Engine (Go + Rust)
+   After=network.target network-online.target
+
+   [Service]
+   Type=simple
+   User=root
+   WorkingDirectory=/opt/konthol-hybrid
+   ExecStart=/opt/konthol-hybrid/konthol_hybrid -cred /opt/konthol-hybrid/credentials.json
+   Restart=always
+   RestartSec=5s
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+   Aktifkan service:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now konthol.service
    ```
 
 ---
 
-## Struktur Berkas Repositori
+### Opsi C: Modul Multi-Account & WhatsApp Gateway
+
+Bagi yang ingin memantau beberapa akun mahasiswa sekaligus dan mengirim notifikasi kehadiran langsung ke WhatsApp masing-masing:
+
+1. Salin template konfigurasi:
+   ```bash
+   cp accounts.example.json accounts.json
+   ```
+2. Lengkapi konfigurasi WhatsApp (Fonnte / WPPConnect / Generic Webhook) dan daftar akun pada `accounts.json`.
+3. Jalankan pemantauan multi-akun:
+   - Menggunakan Python:
+     ```bash
+     python kon_thol_public.py
+     ```
+   - Menggunakan Hybrid Binary:
+     ```bash
+     ./konthol_hybrid -accounts accounts.json
+     ```
+
+---
+
+## Struktur Berkas Proyek
 
 ```
 KON-THOL/
-├── ethol_autopresence.py      # Engine utama presensi, Telegram bot, dan multi-akun
-├── kon_thol_public.py         # Modul presensi multi-akun serentak & WhatsApp Gateway
-├── setup.py                   # Wizard interaktif konfigurasi awal akun & bot
-├── config.example.json        # Template struktur kredensial akun tunggal
-├── accounts.example.json      # Template struktur kredensial multi-akun & WhatsApp
-├── credentials.json           # Berkas kredensial aktif lokal (JANGAN DI-COMMIT)
-├── accounts.json              # Berkas data multi-akun aktif lokal (JANGAN DI-COMMIT)
-├── attended_keys.json         # Riwayat kunci presensi terverifikasi (auto-generated)
-├── autopresence.log           # Berkas catatan log aktivitas sistem
-├── assets/                    # Direktori aset gambar dan banner bot
-└── README.md                  # Dokumentasi teknis
+├── core/                      # Rust Core Engine (Scraping, DOM parser, crypto in-memory)
+│   ├── Cargo.toml
+│   └── src/lib.rs
+├── core_bridge/               # FFI Cgo Bridge penghubung Go dan Rust
+│   └── core.go
+├── dispatcher/                # Unified Dispatcher (WhatsApp, Termux, Windows Toast, Linux)
+│   └── dispatcher.go
+├── telegram/                  # Telegram Bot UI (2-page menu, 22 callbacks, loading bar)
+│   └── bot.go
+├── client/                    # Client HTTP API ETHOL & CAS SSO
+│   └── client.go
+├── config/                    # Manajemen kredensial & multi-account parser
+│   └── config.go
+├── ethol_autopresence.py      # Python V1 Public Edition (Portabel untuk Termux/Desktop)
+├── kon_thol_public.py         # Python Multi-Account & WhatsApp Daemon
+├── setup.py                   # Wizard interaktif setup kredensial akun & bot
+├── credentials.json           # Berkas kredensial tersimpan lokal (jangan di-commit)
+├── config.example.json        # Template manual konfigurasi kredensial
+├── accounts.example.json      # Template multi-account & WhatsApp gateway
+├── attended_keys.json         # Riwayat sesi presensi tercatat (auto-generated)
+├── autopresence.log           # Log aktivitas sistem
+├── assets/                    # Aset banner dan gambar bot
+└── README.md                  # Panduan penggunaan
 ```
 
 ---
 
-## Daftar Perintah Lengkap
+## Daftar Perintah
 
-| Slash Command (Telegram) | Perintah Terminal (CLI) | Deskripsi Fungsi |
+Perintah dapat diakses baik melalui pesan chat Telegram (*slash command*), tombol interaktif (*inline keyboard*), maupun langsung diketik di Terminal:
+
+| Slash Command | Terminal CLI | Fungsi Utama |
 | :--- | :--- | :--- |
-| `/scan` [all / urutan] | `scan` | Memindai dan mengisi presensi yang aktif (mendukung pemindaian per akun atau serentak) |
-| `/jadwal` [all / urutan] | `jadwal` | Menampilkan jadwal kuliah mingguan, info dosen, dan status presensi hari ini |
-| `/tugas` [all / urutan] | `tugas` | Menampilkan tugas aktif, sisa batas waktu, dan tautan portal pengumpulan |
-| `/rekap` [all / urutan] | `rekap` | Menampilkan rekapitulasi persentase kehadiran semester dan mata kuliah |
-| `/accounts` | `accounts` | Melihat daftar seluruh akun mahasiswa yang terdaftar pada engine |
-| `/addaccount` | - | Menambahkan akun mahasiswa baru ke sistem |
-| `/delaccount` | - | Menghapus akun terdaftar berdasarkan urutan (contoh: `/delaccount 2`) atau email |
-| `/status` | `status` | Ringkasan operasional bot, status login SSO, dan status scanner |
-| `/cooldown` | `cooldown` | Mengistirahatkan polling presensi harian setelah kuliah selesai |
+| `/scan` atau `/absen` | `scan` | Memindai seluruh mata kuliah dan mengisi presensi yang sedang terbuka |
+| `/jadwal` atau `/matkul` | `jadwal` | Menampilkan jadwal mingguan rapi + info dosen & status hadir hari ini |
+| `/tugas` | `tugas` | Menampilkan tugas belum dikumpulkan beserta link pengumpulan portal ETHOL |
+| `/rekap` | `rekap` | Statistik rekapitulasi kehadiran semester dan kehadiran per mata kuliah |
+| `/log` | `log` | Menampilkan catatan riwayat log aktivitas sistem terbaru dengan filter kategori |
+| `/status` | `status` | Ringkasan identitas mahasiswa, status sesi login SSO, dan status scanner |
+| `/cooldown` | `cooldown` | Mengistirahatkan scanner presensi setelah kuliah hari ini selesai |
 | `/resume` | `resume` | Membatalkan cooldown dan mengembalikan scanner ke mode siaga penuh |
-| `/log` | `log` | Menampilkan 15 baris log aktivitas sistem terbaru |
-| `/relogin` | `relogin` | Memperbarui sesi autentikasi SSO secara manual jika token kedaluwarsa |
-| `/help` | `help` | Menampilkan ringkasan menu bantuan dan panduan perintah |
+| `/relogin` | `relogin` | Sinkronisasi ulang sesi autentikasi SSO PENS jika token kedaluwarsa |
+| `/help` | `help` | Menampilkan ringkasan fungsi dan panduan perintah bot |
 
 ---
 
-## Orisinalitas Proyek & Hak Cipta Logika
+## Disclaimer & Orisinalitas Proyek
 
-Seluruh baris kode, arsitektur integrasi, algoritma multi-tier polling, dan alur automasi dalam proyek **KON-THOL** ini dirancang serta ditulis secara orisinal dari nol (*from scratch*) oleh pembuat melalui riset independen terhadap alur kerja sistem perkuliahan digital E-THOL PENS. Proyek ini dibangun atas inisiatif pribadi tanpa pernah meniru, menyalin, atau mengadopsi basis kode dari pihak mana pun.
+Seluruh baris kode, integrasi notifikasi, dan logika otomatisasi dalam proyek **KON-THOL** ini dirancang serta ditulis secara mandiri dari nol (*from scratch*) oleh pembuat melalui eksplorasi dan riset independen terhadap API portal E-THOL PENS. Proyek ini murni dibuat atas inisiatif pribadi tanpa pernah melihat, menyalin, ataupun mencontoh script dari pihak lain.
 
-Oleh karena itu, apabila di kemudian hari terdapat script, bot, atau software pembantu presensi ETHOL lain yang beredar di kalangan mahasiswa dan memiliki kesamaan struktur logika atau kode (meskipun menggunakan bahasa pemograman yang berbeda), besar kemungkinan perangkat lunak tersebut berasal dari atau mengadopsi basis logika dan karya cipta dari repositori ini.
-
----
-
-## Disclaimer & Batasan Tanggung Jawab
+Oleh karena itu, apabila di kemudian hari terdapat script, bot, atau software pembantu presensi ETHOL lain yang beredar di kalangan mahasiswa dan memiliki kesamaan struktur logika atau kode, besar kemungkinan software tersebut berasal dari atau mengadopsi basis kode repositori ini.
 
 > [!NOTE]
 > **Catatan Penamaan Proyek:**  
-> Penamaan akronim **KON-THOL** (*Kawan Otomasi dan Notifikasi untuk E-THOL*) dibuat semata-mata sebagai humor dan candaan ringan antar sesama mahasiswa. Kami menaruh rasa hormat yang setinggi-tingginya serta apresiasi yang tulus kepada segenap jajaran Sivitas Akademika PENS dan tim pengembang portal **E-THOL PENS** yang telah menghadirkan sistem perkuliahan digital yang luar biasa andal dan bermanfaat bagi seluruh civitas akademika.
+> Penamaan akronim **KON-THOL** (*Kawan Otomasi dan Notifikasi untuk E-THOL*) dibuat semata-mata sebagai humor dan candaan ringan antar sesama mahasiswa. Kami menaruh rasa hormat yang setinggi-tingginya serta apresiasi yang tulus kepada segenap jajaran Sivitas Akademika PENS dan tim pengembang portal **E-THOL PENS** yang telah menghadirkan sistem perkuliahan digital yang luar biasa andal dan bermanfaat bagi kita semua.
 
-> [!CAUTION]
-> **PERINGATAN KEAMANAN & BATASAN TANGGUNG JAWAB PENGEMBANG:**
-> 1. Berkas kredensial (`credentials.json`, `accounts.json`, password SSO, maupun token bot Telegram) memuat data autentikasi pribadi yang sangat sensitif. **JANGAN PERNAH** membagikan, mengunggah, atau melakukan `git commit / push` berkas-berkas kredensial ke repositori publik atau kepada pihak mana pun.
-> 2. Segala bentuk tindakan, kelalaian, kebocoran akun akibat kecerobohan pengguna, kendala teknis, maupun konsekuensi akademik apa pun yang timbul dari pengoperasian perangkat lunak ini adalah **SEPENUHNYA MENJADI TANGGUNG JAWAB PRIBADI MASING-MASING PENGGUNA**. Creator / pengembang perangkat lunak ini **TIDAK BERTANGGUNG JAWAB ATAS SEGALA BENTUK KONSEKUENSI MAUPUN DAMPAK APA PUN** yang dialami oleh pengguna maupun pihak lain akibat penggunaan script ini.
-> 3. Script ini beroperasi menggunakan arsitektur *session reuse*, caching ringan, dan siklus *adaptive multi-tier polling* yang dirancang hemat resource. Proses pemindaian hanya mengirimkan permintaan HTTP berukuran sangat kecil secara berkala, sehingga berjalan efisien tanpa membebani *traffic* ataupun menimbulkan kelambatan pada infrastruktur portal E-THOL PENS.
+Perangkat lunak ini dikembangkan secara independen sebagai asisten akademik pribadi nirlaba untuk mempermudah produktivitas belajar mahasiswa. Pengguna diharapkan tetap mematuhi seluruh peraturan, etika, dan tata tertib akademik yang berlaku di kampus. Harap menjaga kerahasiaan data akun Anda dan **JANGAN PERNAH** membagikan berkas `credentials.json` ke repositori publik.

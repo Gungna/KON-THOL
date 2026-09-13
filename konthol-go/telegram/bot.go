@@ -249,7 +249,6 @@ func (b *TelegramBot) SendMenu(chatID interface{}, text string, keyboard *Inline
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Cari banner yang ada
 	var activeBanner string
 	for _, bp := range bannerPaths {
 		if _, err := os.Stat(bp); err == nil {
@@ -264,19 +263,12 @@ func (b *TelegramBot) SendMenu(chatID interface{}, text string, keyboard *Inline
 			if err == nil {
 				return
 			}
-		} else {
-			err := b.EditMessageText(chatID, b.LastMenuMsgID, text, keyboard)
-			if err == nil {
-				return
-			}
 		}
-		// Hapus menu lama bila gagal diedit
 		b.DeleteMessage(chatID, b.LastMenuMsgID)
 		b.LastMenuMsgID = 0
 		b.IsBannerActive = false
 	}
 
-	// Kirim menu baru
 	if activeBanner != "" {
 		msgID, err := b.SendPhotoMenu(chatID, activeBanner, text, keyboard)
 		if err == nil && msgID > 0 {
@@ -286,7 +278,6 @@ func (b *TelegramBot) SendMenu(chatID interface{}, text string, keyboard *Inline
 		}
 	}
 
-	// Fallback text menu
 	msgID, err := b.SendMessage(chatID, text, keyboard)
 	if err == nil && msgID > 0 {
 		b.LastMenuMsgID = msgID
@@ -294,26 +285,27 @@ func (b *TelegramBot) SendMenu(chatID interface{}, text string, keyboard *Inline
 	}
 }
 
-// Show Content Card in-place
+// Show Content Card in-place (Edit caption jika banner aktif, atau edit text/send message jika kartu)
 func (b *TelegramBot) ShowContentCard(chatID interface{}, text string, keyboard *InlineKeyboardMarkup) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if b.LastMenuMsgID > 0 {
 		if b.IsBannerActive {
-			err := b.EditMessageCaption(chatID, b.LastMenuMsgID, text, keyboard)
-			if err == nil {
-				return
-			}
+			// Menimpa banner foto menjadi card teks tanpa banner
+			b.DeleteMessage(chatID, b.LastMenuMsgID)
+			b.LastMenuMsgID = 0
+			b.IsBannerActive = false
 		} else {
 			err := b.EditMessageText(chatID, b.LastMenuMsgID, text, keyboard)
 			if err == nil {
 				return
 			}
+			b.DeleteMessage(chatID, b.LastMenuMsgID)
+			b.LastMenuMsgID = 0
 		}
 	}
 
-	// Fallback send message
 	msgID, err := b.SendMessage(chatID, text, keyboard)
 	if err == nil && msgID > 0 {
 		b.LastMenuMsgID = msgID
@@ -397,7 +389,8 @@ func (b *TelegramBot) getUpdates(offset int) ([]Update, error) {
 	return res.Result, nil
 }
 
-// Keyboards (100% Identical to Python V2)
+// Keyboards (100% IDENTICAL to Python V2)
+
 func GetMainKeyboard(page int, isCooldown bool) *InlineKeyboardMarkup {
 	var cooldownBtn InlineKeyboardButton
 	if isCooldown {
@@ -449,7 +442,7 @@ func GetMainKeyboard(page int, isCooldown bool) *InlineKeyboardMarkup {
 	}
 }
 
-func GetBackKeyboard() *InlineKeyboardMarkup {
+func GetStatusKeyboard() *InlineKeyboardMarkup {
 	return &InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{
@@ -460,18 +453,60 @@ func GetBackKeyboard() *InlineKeyboardMarkup {
 	}
 }
 
-func GetPublicKeyboard() *InlineKeyboardMarkup {
+func GetPage2BackKeyboard() *InlineKeyboardMarkup {
+	return &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: "« Menu Utama", CallbackData: "btn_page_1"},
+				{Text: "« Balik ke Menu 2", CallbackData: "btn_page_2"},
+			},
+		},
+	}
+}
+
+func GetBackKeyboard() *InlineKeyboardMarkup {
+	return &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: "« Kembali ke Menu Utama", CallbackData: "btn_menu"},
+			},
+		},
+	}
+}
+
+func GetKontholPublicKeyboard() *InlineKeyboardMarkup {
 	return &InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{
 				{Text: "⚡ Scan Semua Akun Sekarang", CallbackData: "btn_public_scan"},
 			},
 			{
-				{Text: "👥 Lihat Daftar Akun", CallbackData: "btn_public_accounts"},
+				{Text: "📋 Daftar Akun Terdaftar", CallbackData: "btn_public_accounts"},
 			},
 			{
 				{Text: "« Menu Utama", CallbackData: "btn_page_1"},
 				{Text: "« Balik ke Menu 2", CallbackData: "btn_page_2"},
+			},
+		},
+	}
+}
+
+func GetLogKeyboard() *InlineKeyboardMarkup {
+	return &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: "⚠️ Log Error", CallbackData: "btn_log_err"},
+				{Text: "🔑 Log Login & Listener", CallbackData: "btn_log_auth"},
+			},
+			{
+				{Text: "🔔 Log Notif Masuk", CallbackData: "btn_log_notif"},
+				{Text: "✅ Log Presensi Berhasil", CallbackData: "btn_log_pres"},
+			},
+			{
+				{Text: "🌐 Log Semua (Global)", CallbackData: "btn_log_all"},
+			},
+			{
+				{Text: "« Kembali ke Menu Utama", CallbackData: "btn_menu"},
 			},
 		},
 	}

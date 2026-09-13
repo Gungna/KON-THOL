@@ -16,9 +16,6 @@ Bot **KON-THOL** dirancang paling optimal ketika **di-pair / diintegrasikan deng
 - Notifikasi presensi berhasil, tugas baru, dan pengingat deadline langsung masuk ke chat Telegram Anda.
 - Seluruh perintah dapat diakses cepat menggunakan *slash command* standar maupun antarmuka tombol interaktif (*inline keyboard*).
 
-> [!TIP]
-> Menghubungkan bot ke Telegram pribadi adalah cara paling nyaman: seluruh informasi jadwal, rekap kehadiran, dan tugas kuliah bisa diakses cukup dengan satu ketukan tombol di HP Anda tanpa repot menyalakan laptop atau terminal.
-
 **Apakah bisa dipakai tanpa Telegram (Hanya dari Terminal)?**  
 Bisa. Anda tetap dapat menjalankan sistem di laptop atau HP (Termux) secara mandiri:
 1. **Notifikasi Tetap Masuk Langsung ke Perangkat:**
@@ -33,14 +30,51 @@ Bisa. Anda tetap dapat menjalankan sistem di laptop atau HP (Termux) secara mand
 
 ---
 
+## Panduan Integrasi Telegram Bot (Dari Awal Sampai Selesai)
+
+Setiap pengguna membuat dan menggunakan Bot Telegram pribadi secara mandiri tanpa biaya. Berikut alur penyiapan dari awal:
+
+1. **Pembuatan Bot di Telegram**:
+   - Buka aplikasi Telegram, cari akun resmi **@BotFather**, lalu tekan tombol Start.
+   - Kirim perintah `/newbot`.
+   - Masukkan nama tampilan bot yang diinginkan (contoh: `Asisten Presensi PENS`).
+   - Masukkan username bot unik yang berakhiran kata `bot` (contoh: `pens_presensi_robot`).
+   - BotFather akan memberikan **HTTP API Token** (contoh format: `7123456789:AAFxX...`). Simpan token ini dengan aman.
+2. **Mendapatkan Telegram Chat ID**:
+   - Cari akun bot **@userinfobot** di Telegram, lalu tekan tombol Start.
+   - Bot akan membalas dengan menampilkan nomor ID Telegram pengguna (berupa deretan angka).
+3. **Mengaktifkan Izin Pesan Bot**:
+   - Cari username bot pribadi yang baru saja dibuat di langkah nomor 1.
+   - Tekan tombol **Start** atau kirim pesan `/start` ke bot tersebut agar bot memiliki izin mengirimkan notifikasi.
+4. **Penyimpanan Konfigurasi**:
+   - Jalankan wizard otomatis:
+     ```bash
+     python setup.py
+     ```
+   - Masukkan email SSO PENS, password SSO, Token Bot Telegram, serta Chat ID saat diminta. Seluruh konfigurasi akan tersimpan otomatis di berkas lokal `credentials.json`.
+   - Atau buat manual berkas `credentials.json` sesuai template `config.example.json`:
+     ```json
+     {
+       "pens_email": "nama_mahasiswa@it.student.pens.ac.id",
+       "pens_password": "PASSWORD_SSO_ANDA",
+       "tg_token": "TOKEN_DARI_BOTFATHER",
+       "tg_chat_id": "CHAT_ID_DARI_USERINFOBOT",
+       "tg_allowed_users": ["CHAT_ID_DARI_USERINFOBOT"]
+     }
+     ```
+
+---
+
 ## Fitur Utama
 
 - **Otomasi Presensi Tenang & Cepat**:  
   Memantau dan mengisi presensi secara otomatis ketika sesi kuliah dibuka oleh dosen, sehingga Anda tidak perlu cemas terlewat sesi presensi saat sedang fokus menyimak materi.
 - **Antarmuka Rapi & Otomatis (Single-View Clean UI)**:  
-  Chat Telegram tetap bersih dan rapi layaknya dashboard aplikasi. Perintah yang telah usang beserta pesan interaksi perantara otomatis dibersihkan dari ruang chat, menyisakan Banner Menu utama di atas dan hasil perintah terbaru Anda di bawahnya.
-- **Transisi Visual Progresif (Loading Bar 50%-100%)**:  
-  Umpan balik seketika saat memindai presensi atau memuat data dengan indikator visual dinamis sehingga pengguna mengetahui status pemrosesan sistem secara transparan.
+  Chat Telegram tetap bersih dan rapi layaknya dashboard aplikasi. Perintah yang telah usang beserta pesan interaksi perantara otomatis dibersihkan dari ruang chat, menyisakan Banner Menu utama di atas dan hasil perintah terbaru Anda di bawahnya tanpa pernah muncul dobel.
+- **In-Place Cooldown & Resume UX**:  
+  Mengaktifkan mode cooldown atau siaga penuh langsung memperbarui status menu di tempat disertai umpan balik *callback alert* dan status `Command : Success`, tanpa kartu perantara yang mengharuskan klik kembali.
+- **Transisi Visual Progresif (Adaptive Loading Bar)**:  
+  Umpan balik seketika yang adaptif sesuai kedalaman proses: 1 langkah langsung terbuka seketika (100%), 2 langkah untuk scan presensi (50% -> 100%), dan 3 langkah untuk pemindaian paralel multi-akun (33% -> 66% -> 100%).
 - **Jadwal Operasional Cerdas (Siaga Subuh & Istirahat Malam)**:  
   - 🌅 **Siaga Subuh (Mulai 04:00 WIB)**: Aktif sejak waktu sebelum azan Subuh berkumandang untuk siaga memantau persiapan sesi dan jadwal perkuliahan hari ini.  
   - 🟢 **Siaga Penuh (06:30 - 21:30 WIB)**: Memantau presensi dan jadwal secara aktif di jam perkuliahan reguler.  
@@ -54,7 +88,7 @@ Bisa. Anda tetap dapat menjalankan sistem di laptop atau HP (Termux) secara mand
 - **Filter Log Aktivitas 5 Kategori**:  
   Menyajikan riwayat log terpilah (Log Error, Log Login & Listener, Log Notif Masuk, Log Presensi Berhasil, dan Log Global) langsung dari sub-menu Telegram.
 - **Edisi Khusus: Multi-Account Concurrency & WhatsApp Gateway (`kon_thol_public.py`)**:  
-  Mendukung pemindaian dan pengisian presensi otomatis untuk 2 atau lebih akun mahasiswa sekaligus secara serentak (*concurrent multithreading*) menggunakan `ThreadPoolExecutor`, lengkap dengan notifikasi WhatsApp Gateway real-time (Fonnte, WPPConnect, atau Webhook) serta fallback Telegram.
+  Mendukung pemindaian dan pengisian presensi otomatis untuk 2 atau lebih akun mahasiswa sekaligus secara serentak (*concurrent multithreading*) menggunakan `ThreadPoolExecutor`, lengkap dengan notifikasi WhatsApp Gateway real-time (Fonnte, WAHA, Evolution API, atau Webhook) serta fallback Telegram.
 
 ---
 
@@ -74,7 +108,7 @@ Untuk mendapatkan efisiensi dan performa maksimal, berikut rekomendasi runtime b
 
 ---
 
-### Opsi A: Panduan Menjalankan di HP Android (Termux) — Rekomendasi Portabel
+### Opsi A: Panduan Menjalankan di HP Android (Termux) - Rekomendasi Portabel
 
 Jika ingin menjalankan bot langsung dari smartphone tanpa menyewa server:
 
@@ -104,7 +138,7 @@ Jika ingin menjalankan bot langsung dari smartphone tanpa menyewa server:
 
 ---
 
-### Opsi B: Panduan Menjalankan di VPS / Server Linux (Debian / Ubuntu) — Rekomendasi Performa Tinggi (Go + Rust)
+### Opsi B: Panduan Menjalankan di VPS / Server Linux (Debian / Ubuntu) - Rekomendasi Performa Tinggi (Go + Rust)
 
 Untuk operasional stabil 24 jam nonstop dengan efisiensi sumber daya maksimal:
 
@@ -158,7 +192,7 @@ Bagi yang ingin memantau beberapa akun mahasiswa sekaligus dan mengirim notifika
    ```bash
    cp accounts.example.json accounts.json
    ```
-2. Lengkapi konfigurasi WhatsApp (Fonnte / WPPConnect / Generic Webhook) dan daftar akun pada `accounts.json`.
+2. Lengkapi konfigurasi WhatsApp (Fonnte / WAHA / Evolution API / Webhook) dan daftar akun pada `accounts.json`.
 3. Jalankan pemantauan multi-akun:
    - Menggunakan Python:
      ```bash
@@ -171,6 +205,75 @@ Bagi yang ingin memantau beberapa akun mahasiswa sekaligus dan mengirim notifika
 
 ---
 
+## Panduan Integrasi WhatsApp Gateway (Dari Awal Sampai Selesai)
+
+Untuk pengiriman notifikasi presensi otomatis melalui WhatsApp ke nomor pribadi maupun rekan kelompok, sistem menyediakan integrasi gateway yang mendukung berbagai penyedia:
+
+### Pilihan 1: Menggunakan Layanan Cloud Gateway (Fonnte)
+1. Buka situs penyedia gateway **Fonnte** (fonnte.com) dan lakukan pendaftaran akun.
+2. Masuk ke dashboard Fonnte, lalu hubungkan nomor WhatsApp pengirim dengan memindai kode QR pada menu *Perangkat Tertaut* di aplikasi WhatsApp smartphone.
+3. Buka menu *API Token* di dashboard Fonnte, lalu salin token yang tersedia.
+4. Buka berkas `accounts.json` (salinan dari `accounts.example.json`), lalu sesuaikan bagian konfigurasi:
+   ```json
+   "whatsapp": {
+       "provider": "fonnte",
+       "api_key": "MASUKKAN_TOKEN_FONNTE_DISINI",
+       "target_phone": "6281234567890",
+       "endpoint_url": "https://api.fonnte.com/send"
+   }
+   ```
+
+### Pilihan 2: Menggunakan Gateway Mandiri - WAHA (WhatsApp HTTP API)
+WAHA adalah gateway WhatsApp mandiri berbasis Docker yang sangat stabil dan hemat memori:
+1. Jalankan container WAHA di server atau komputer Anda:
+   ```bash
+   docker run -d --name waha -p 3000:3000 -v waha_sessions:/app/.sessions --restart always devlikeappro/waha
+   ```
+2. Buka dashboard WAHA di browser (`http://IP_SERVER:3000/dashboard`).
+3. Mulai session (misalnya session `default`), lalu pindai kode QR menggunakan WhatsApp di smartphone.
+4. Buka berkas `accounts.json`, lalu atur bagian WhatsApp:
+   ```json
+   "whatsapp": {
+       "provider": "waha",
+       "api_key": "API_KEY_JIKA_DIATUR",
+       "session_name": "default",
+       "target_phone": "6281234567890",
+       "endpoint_url": "http://IP_SERVER:3000/api/sendText"
+   }
+   ```
+
+### Pilihan 3: Menggunakan Gateway Mandiri - Evolution API (Evo)
+Evolution API adalah engine WhatsApp multi-device canggih berbasis Node.js:
+1. Pasang dan jalankan instance Evolution API (melalui Docker Compose atau binary):
+   ```bash
+   docker run -d --name evo -p 8080:8080 -e AUTHENTICATION_API_KEY=KUNCI_API_ANDA atendai/evolution-api:v2.1.1
+   ```
+2. Buat instance baru melalui API atau panel manager Evolution (contoh nama instance: `konthol`).
+3. Pindai kode QR instance untuk menautkan nomor WhatsApp pengirim.
+4. Buka berkas `accounts.json`, lalu atur konfigurasi:
+   ```json
+   "whatsapp": {
+       "provider": "evolution",
+       "api_key": "KUNCI_API_ANDA",
+       "session_name": "konthol",
+       "target_phone": "6281234567890",
+       "endpoint_url": "http://IP_SERVER:8080/message/sendText/konthol"
+   }
+   ```
+
+### Pilihan 4: Menggunakan Custom Webhook / WPPConnect
+Jika Anda menggunakan webhook custom atau microservice bot WhatsApp lainnya:
+```json
+"whatsapp": {
+    "provider": "webhook",
+    "api_key": "BEARER_TOKEN_JIKA_ADA",
+    "target_phone": "6281234567890",
+    "endpoint_url": "http://IP_SERVER_GATEWAY:PORT/api/sendText"
+}
+```
+
+---
+
 ## Struktur Berkas Proyek
 
 ```
@@ -180,7 +283,7 @@ KON-THOL/
 │   └── src/lib.rs
 ├── core_bridge/               # FFI Cgo Bridge penghubung Go dan Rust
 │   └── core.go
-├── dispatcher/                # Unified Dispatcher (WhatsApp, Termux, Windows Toast, Linux)
+├── dispatcher/                # Unified Dispatcher (WAHA, Evolution API, Fonnte, Termux, Windows Toast, Linux)
 │   └── dispatcher.go
 ├── telegram/                  # Telegram Bot UI (2-page menu, 22 callbacks, loading bar)
 │   └── bot.go

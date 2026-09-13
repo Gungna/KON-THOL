@@ -409,24 +409,16 @@ func getStatusBox() string {
 
 func getWelcomeTextWithCmd(page int, cmdStatus string) string {
 	box := getStatusBox()
-	cmdLine := ""
+	cmdBlock := ""
 	if cmdStatus != "" {
-		cmdLine = fmt.Sprintf("<code>Command : %s</code>\n\n", cmdStatus)
-	}
-	if page == 2 {
-		return fmt.Sprintf("<b>KON-THOL ASSISTANT</b>\n"+
-			"<i>Menu Sistem, Notifikasi & Log</i>\n\n"+
-			"%s"+
-			"%s\n\n"+
-			"✦ <b>Creator : Gungna</b>\n\n"+
-			"Silakan pilih menu lanjutan di bawah:", cmdLine, box)
+		cmdBlock = fmt.Sprintf("<code>Command : %s</code>\n\n", cmdStatus)
 	}
 	return fmt.Sprintf("<b>KON-THOL ASSISTANT</b>\n"+
 		"<i>Kawan Otomasi dan Notifikasi E-THOL</i>\n\n"+
-		"%s"+
 		"%s\n\n"+
+		"%s"+
 		"✦ <b>Creator : Gungna</b>\n\n"+
-		"Silakan pilih menu di bawah ini:", cmdLine, box)
+		"Silakan pilih menu di bawah ini:", box, cmdBlock)
 }
 
 func getWelcomeText(page int) string {
